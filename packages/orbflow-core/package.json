@@ -34,7 +34,7 @@
   "devDependencies": {
     "@types/dagre": "^0.7.54",
     "@types/react": "^19.0.0",
-    "typescript": "^5.7.0",
+    "typescript": "^6.0.2",
     "vitest": "^3.2.1"
   },
   "dependencies": {
