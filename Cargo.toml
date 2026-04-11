@@ -71,7 +71,7 @@ cel-parser = "0.10"
 aes-gcm = "0.10"
 hmac = "0.12"
 sha2 = "0.10"
-md-5 = "0.10"
+md-5 = "0.11"
 base64 = "0.22"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 subtle = "2"
