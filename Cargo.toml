@@ -61,7 +61,7 @@ protox = "0.9"
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "json", "chrono", "uuid"] }
 
 # NATS
-async-nats = "0.46"
+async-nats = "0.47"
 
 # CEL
 cel-interpreter = "0.10"
