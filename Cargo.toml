@@ -69,7 +69,7 @@ cel-parser = "0.10"
 
 # Crypto
 aes-gcm = "0.10"
-hmac = "0.12"
+hmac = "0.13"
 sha2 = "0.10"
 md-5 = "0.10"
 base64 = "0.22"
