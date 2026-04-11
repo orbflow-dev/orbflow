@@ -1,0 +1,120 @@
+{
+  "key_principles": [
+    "Rust-specific review prompts must target what the compiler cannot catch: business logic errors, API design flaws, unnecessary clones, unsafe code without safety contracts, and performance regressions in hot paths. Generic 'review this code' prompts miss Rust-unique concerns.",
+    "Layered review structure: start with high-level design (does this module/trait need to exist?), then correctness (lifetimes, ownership, Result handling), then idioms/readability, then performance. This mirrors how experienced Rust reviewers think.",
+    "Unsafe code demands a written safety contract in every review prompt: not what the code does, but WHY it is safe, what invariants are assumed, and under what conditions it would break. No unsafe block should pass review without this documentation.",
+    "Clone is the duct tape of Rust -- review prompts must explicitly ask reviewers to justify every clone(), especially inside loops or hot paths. Cloning to satisfy the borrow checker is a design smell; consider Cow<T>, borrowing restructuring, or Arc.",
+    "Trait proliferation is a common Rust anti-pattern: every trait adds complexity. Review prompts should ask whether a trait is justified by generic use, async polymorphism, or test mocking -- not created reflexively as in Java-style DI.",
+    "Error handling review must distinguish library code (must return Result, never panic) from application code (may panic in truly unrecoverable situations). Prompts should flag unwrap() in non-test code and check for swallowed errors.",
+    "Async correctness requires checking for blocking operations inside async contexts, proper use of tokio::join!/spawn for concurrency, and ensuring Mutex locks are not held across await points.",
+    "Crate boundary hygiene: dependencies should point inward (only core types imported across boundaries). Review prompts should verify that adapter crates do not leak implementation details and that port traits define clean interfaces.",
+    "Concurrency review must go beyond what the compiler checks: deadlock potential (lock ordering), excessive lock hold times, whether Arc<Mutex<T>> is hiding unnecessary shared state, and channel vs shared-state trade-offs.",
+    "Performance review in Rust requires domain context that clippy cannot provide: holding locks too long, unnecessary collect() on large iterators when streaming would suffice, type conversion churn to appease the type system, and heap allocations in hot paths."
+  ],
+  "concrete_examples": [
+    {
+      "name": "Generic vs Rust-specific review prompt",
+      "before": "Review this code for bugs and best practices.",
+      "after": "Review this Rust code focusing on: (1) ownership -- are there unnecessary clones that could be replaced with borrows or Cow<T>? (2) error handling -- does any non-test code use unwrap() or expect() without justification? (3) unsafe blocks -- does each have an inline safety contract documenting invariants? (4) async correctness -- are there blocking calls inside async fn or Mutex locks held across .await? (5) trait design -- does every trait have more than one implementor or a clear testing/polymorphism justification?",
+      "why": "The specific prompt surfaces Rust-unique concerns that generic prompts completely miss, like clone abuse, unsafe contracts, and async blocking."
+    },
+    {
+      "name": "Performance-focused hot path review",
+      "before": "Check this code for performance issues.",
+      "after": "Analyze this code path for performance: (1) Identify any clone() calls inside loops or frequently-called functions. (2) Check for collect::<Vec<_>>() on large iterators where a streaming/iterator approach would avoid allocation. (3) Flag any Mutex/RwLock held across await points or longer than necessary. (4) Look for repeated String/Vec allocations that could use pre-allocated buffers or Cow. (5) Check for unnecessary type conversions (e.g., String -> &str -> String round-trips).",
+      "why": "Rust performance regressions often pass all tests and clippy but kill latency SLAs. Specific allocation and locking patterns need explicit prompt guidance."
+    },
+    {
+      "name": "Unsafe code audit prompt",
+      "before": "Check for unsafe code.",
+      "after": "Audit all unsafe blocks in this diff: For each unsafe block, verify: (1) There is an inline comment explaining the safety contract -- not what the code does, but WHY it is safe. (2) Document what invariants are assumed (alignment, validity of pointers, FFI buffer ownership). (3) Identify whether the unsafe could be eliminated with safe abstractions. (4) Check if the unsafe block's safety depends on constructor invariants or struct field assumptions that could be violated by other code paths. (5) Flag any unsafe in hot paths where the safety assumptions might not hold under all platform conditions (e.g., alignment on Windows vs Linux).",
+      "why": "Unsafe code that 'works on my machine' is a ticking time bomb. Cross-platform invariant checking and constructor-dependency analysis catch real production bugs."
+    },
+    {
+      "name": "Crate boundary review prompt for ports-and-adapters",
+      "before": "Review the module organization.",
+      "after": "Verify crate boundary hygiene: (1) Does orbflow-core define all port traits and domain types without importing any adapter crate? (2) Do adapter crates (orbflow-postgres, orbflow-natsbus, etc.) only import orbflow-core? (3) Are there any circular or lateral dependencies between adapter crates? (4) Do port trait signatures use domain types only, not adapter-specific types (e.g., sqlx::Row leaking into a trait)? (5) Is wire format serialization (JSON field names, snake_case) consistent between Rust structs and frontend TypeScript types?",
+      "why": "Ports-and-adapters architecture breaks silently when implementation details leak across boundaries. This prompt enforces the architectural invariant that dependencies point inward."
+    },
+    {
+      "name": "SQL injection prevention in Rust backend",
+      "before": "Check for security issues.",
+      "after": "Map all input paths from HTTP/gRPC handlers to database queries: (1) Verify all SQL uses parameterized queries via sqlx::query! or sqlx::query_as! macros (compile-time checked). (2) Flag any use of format!() or string concatenation to build SQL. (3) Check that user-provided sort/filter fields are validated against an allowlist, not interpolated directly. (4) Verify CEL expression inputs are sandboxed and cannot escape to SQL. (5) Check that pagination parameters (offset, limit) are validated as positive integers before reaching the query layer.",
+      "why": "Rust's type system helps but does not prevent SQL injection when raw query strings are constructed. Compile-time checked macros like sqlx::query! are the gold standard."
+    }
+  ],
+  "anti_patterns": [
+    {
+      "pattern": "Treating Rust like any other language in review prompts",
+      "why_it_fails": "Generic prompts like 'review for bugs and best practices' miss Rust-specific concerns: ownership semantics, borrow checker workarounds (unnecessary clones), unsafe code contracts, async blocking, and trait coherence rules. The compiler catches syntax and memory safety -- reviews must catch what it cannot.",
+      "instead": "Always include Rust-specific sections: ownership/borrowing justification, unsafe audit with safety contracts, async correctness checks, and clone/allocation analysis."
+    },
+    {
+      "pattern": "Assuming the compiler replaces code review",
+      "why_it_fails": "The Rust compiler catches syntactic and memory safety violations, but NOT: business logic errors, performance regressions (clone in hot loops, lock contention), API design problems, unnecessary complexity, or architectural boundary violations. Teams that skip reviews because 'it compiles' accumulate tech debt.",
+      "instead": "Frame the review prompt around 'things the compiler cannot see': design quality, performance cost, abstraction clarity, and production readiness."
+    },
+    {
+      "pattern": "Reviewing clone() as always acceptable",
+      "why_it_fails": "clone() is often used as duct tape to satisfy the borrow checker. In hot paths, unnecessary clones cause real performance regressions that pass all tests and CI. Reviewers who see clone() and move on miss the root cause.",
+      "instead": "Prompt should ask: Why is this data being cloned? Can this borrow be restructured? Could Cow<T> or Arc<T> be used? Is this clone inside a loop or hot path?"
+    },
+    {
+      "pattern": "Creating traits for every abstraction (Java-style DI)",
+      "why_it_fails": "Rust is not Java. Single-implementor traits add indirection that hides bugs and increases complexity without providing real polymorphism or testability benefits. Over-traiting makes code harder to navigate and review.",
+      "instead": "Prompt should verify: Does this trait have multiple implementors? Is it needed for test mocking? Does it serve async polymorphism? If none, push back on the trait."
+    },
+    {
+      "pattern": "Ignoring lock hold duration in concurrent code",
+      "why_it_fails": "The Rust compiler prevents data races but cannot detect deadlocks, lock contention, or performance degradation from holding Mutex/RwLock across await points or expensive operations. These issues only manifest under production load.",
+      "instead": "Review prompts must explicitly check: Is any lock held across an .await? Is the critical section minimal? Is lock ordering consistent to prevent deadlocks?"
+    },
+    {
+      "pattern": "Using broad unwrap() without context",
+      "why_it_fails": "unwrap() crashes the process when the Option is None or Result is Err. In library code or production paths, this creates unreliable services. Even expect() without a meaningful message makes debugging difficult.",
+      "instead": "Prompt should flag all unwrap() in non-test code. Require Result propagation with ? operator, or expect() with a message explaining why the value should always be present."
+    }
+  ],
+  "implementation_recommendations": [
+    "Create a dedicated Rust backend review prompt file (e.g., review-rust-backend.md) separate from frontend review prompts. Rust review concerns (ownership, unsafe, async, crate boundaries) have zero overlap with TypeScript/React review concerns (component patterns, hook rules, CSS).",
+    "Structure the Rust review prompt in layers matching the expert review flow: (1) Architecture/Design -- crate boundaries, trait justification, module organization; (2) Correctness -- ownership, lifetimes, error handling, Result propagation; (3) Safety -- unsafe audit, SQL injection, input validation; (4) Performance -- clone analysis, allocation patterns, lock contention, async blocking; (5) Production readiness -- logging, error messages, panic-freedom.",
+    "For orbflow specifically, include a crate boundary verification section that checks the ports-and-adapters invariant: orbflow-core defines all port traits, adapter crates only import orbflow-core, no lateral dependencies between adapters, wire types use consistent snake_case JSON serialization.",
+    "Add a orbflow-specific CEL expression security section: verify that user-provided CEL expressions in workflow definitions are sandboxed, cannot access system resources, and do not create injection vectors when evaluated by orbflow-cel.",
+    "Include an engine concurrency section specific to orbflow's DashMap<InstanceId, Arc<Mutex<()>>> pattern: verify per-instance locking is correct, optimistic retry logic handles all conflict cases, and no lock is held across async boundaries.",
+    "Reference the existing CLAUDE.md conventions in the review prompt: immutable domain objects, builder patterns (EngineOptionsBuilder), event sourcing with DomainEvent variants, and NodeExecutor trait pattern for builtin nodes."
+  ],
+  "prompt_template_fragments": [
+    "## Ownership and Borrowing\n- For each function: is ownership transfer via move intentional? Could parameters accept &T or &[T] instead of owned types?\n- Flag every clone() call: is it necessary, or is it working around a borrow checker issue? Consider Cow<T>, restructured borrows, or Arc<T>.\n- Verify lifetime annotations are minimal and correct -- only present when the compiler cannot infer them.\n- Check that slices (&[T], &str) are preferred over owned collections (Vec<T>, String) in function parameters.",
+    "## Error Handling\n- Flag all unwrap() and expect() in non-test code. Library/service code must return Result and propagate errors with ?.\n- Verify custom error types exist for domain errors (using thiserror or similar).\n- Check that errors are propagated, never silently swallowed. No empty catch blocks or ignored Result values.\n- Ensure panic!() is only used for truly unrecoverable programmer errors, never for expected failure cases.",
+    "## Unsafe Code Audit\n- Every unsafe block MUST have an inline comment documenting: (a) WHY it is safe, (b) what invariants are assumed, (c) under what conditions it would break.\n- Check if the unsafe could be eliminated with safe abstractions.\n- If safety depends on struct constructor invariants, verify all constructors maintain those invariants.\n- Flag unsafe in hot paths where platform-specific assumptions (alignment, endianness) may not hold universally.",
+    "## Async Correctness\n- Flag any blocking operation (std::fs, std::net, heavy computation) inside async fn -- use tokio::task::spawn_blocking or async equivalents.\n- Verify no Mutex (std::sync::Mutex) is held across .await points -- use tokio::sync::Mutex if lock must span await.\n- Check that concurrent operations use tokio::join! or tokio::select! rather than sequential .await chains when independence allows.\n- Verify cancellation safety: are there resources that leak if a future is dropped mid-execution?",
+    "## Crate Boundary Hygiene (Ports & Adapters)\n- orbflow-core defines all port traits and domain types. No adapter crate types should appear in port trait signatures.\n- Adapter crates import only orbflow-core. No lateral imports between adapters (e.g., orbflow-postgres must not import orbflow-natsbus).\n- Wire types (TaskMessage, ResultMessage) use snake_case JSON field names matching frontend TypeScript types in api.ts.\n- Check Cargo.toml dependencies: each crate should only depend on what it directly uses.",
+    "## Performance Review\n- Identify clone() calls inside loops or frequently-called functions. Suggest borrowing or Cow<T> alternatives.\n- Flag collect::<Vec<_>>() on large iterators where streaming/iterator chaining would avoid heap allocation.\n- Check Mutex/RwLock critical sections: is the lock held for the minimum necessary duration? Any lock held across .await?\n- Look for repeated String/Vec allocations that could use pre-allocated buffers with_capacity().\n- Verify no unnecessary type conversions (String -> &str -> String round-trips).",
+    "## Concurrency and Thread Safety\n- Verify Arc<Mutex<T>> usage is justified -- could the design avoid shared mutable state entirely?\n- Check lock ordering consistency across the codebase to prevent deadlocks.\n- For DashMap usage: verify no iterator is held while inserting/removing (potential deadlock).\n- Verify Send + Sync bounds are satisfied for all types crossing thread boundaries.\n- Check channel usage: bounded vs unbounded, backpressure handling, and graceful shutdown.",
+    "## SQL and Input Validation\n- All SQL queries must use parameterized queries (sqlx::query! or sqlx::query_as! for compile-time checking).\n- Flag any format!() or string concatenation used to build SQL strings.\n- User-provided sort/filter/column names must be validated against an allowlist.\n- All HTTP/gRPC input must be validated at the handler boundary before reaching business logic.\n- Pagination parameters (offset, limit) must be validated as bounded positive integers."
+  ],
+  "sources": [
+    "https://pullpanda.io/blog/rust-code-review-checklist - Comprehensive Rust code review checklist covering ownership, borrowing, error handling, traits, concurrency",
+    "https://bito.ai/blog/rust-code-review/ - Field guide for Rust code review with emphasis on what the compiler cannot catch",
+    "https://5ly.co/blog/ai-prompts-for-code-review/ - AI prompts for code review including SQL injection, security, architecture review templates",
+    "https://thepromptshelf.dev/rules/lang/rust/ - Curated Rust AI coding rules from major projects (Zed, OpenAI Codex, Deno)",
+    "https://www.josecasanova.com/blog/claude-code-review-prompt - Practical Claude Code review prompt focused on critical issues only",
+    "https://medium.com/rustaceans/6-essential-agent-prompts-for-rust-code-optimization-31428712fcdf - Agent prompts for Rust code optimization",
+    "https://github.com/ZhangHanDong/rust-code-review-guidelines - Rust Code Review Guidelines (RCRG) open source project",
+    "https://nnethercote.github.io/perf-book/linting.html - The Rust Performance Book on clippy linting for performance",
+    "https://www.stackhawk.com/blog/rust-sql-injection-guide-examples-and-prevention/ - Rust SQL injection prevention guide",
+    "https://github.com/Ranrar/rustic-prompt - Collection of AI instructions for the Rust programming language",
+    "https://arxiv.org/abs/2504.21312 - Academic paper on annotating and auditing safety properties of unsafe Rust"
+  ],
+  "relevance_to_orbflow": "Orbflow's Rust backend is a textbook ports-and-adapters architecture with orbflow-core defining all port traits (Engine, Store, Bus, NodeExecutor, CredentialStore) and adapter crates implementing them. This makes crate boundary hygiene a first-class review concern -- any leakage of adapter types into port traits breaks the architectural invariant. The engine's use of DashMap<InstanceId, Arc<Mutex<()>>> for per-instance locking, combined with async task dispatching via NATS, creates exactly the kind of concurrency pattern where lock-across-await and deadlock issues are most dangerous. The CEL expression evaluator (orbflow-cel) processes user-provided workflow expressions, making it a potential injection vector that needs explicit security review. The builtin node convention (NodeExecutor trait + NodeSchemaProvider) establishes a pattern that review prompts should verify for consistency. Event sourcing with DomainEvent variants and periodic snapshots means crash recovery correctness is a review concern that generic prompts would never surface.\n\nThe immutable domain object pattern (engine creates new Instance copies rather than mutating) aligns with Rust's ownership model but requires review attention to ensure clones are intentional and not accidentally expensive. The wire compatibility requirement (snake_case JSON matching frontend api.ts types) is a cross-boundary concern that spans both Rust and TypeScript review prompts, making it important to coordinate between the backend and frontend review files.",
+  "automation_hooks": [
+    "Claude Code PreToolUse hook: Before any git commit touching crates/ directory, automatically run 'cargo clippy --workspace -- -D warnings' and 'cargo test --workspace' to catch basic issues before review.",
+    "PostToolUse hook on file edits in crates/orbflow-core/src/ports/: Verify that no adapter-specific types (sqlx, nats, etc.) are imported in port trait definitions. Alert if dependency direction is violated.",
+    "Git diff integration: Parse 'git diff --name-only' to determine which crates are modified, then select relevant review prompt sections (e.g., only include async correctness for orbflow-engine changes, SQL injection for orbflow-postgres changes).",
+    "Slash command '/review-rust': Trigger a focused Rust backend review using the layered prompt structure -- runs clippy first, then applies the AI review prompt with crate-specific sections based on changed files.",
+    "CI GitHub Action using claude-code-action: Configure direct_prompt with the Rust-specific review template fragments, scoped to only review .rs files in the PR diff. Use the concise output format (flag critical issues only, approve otherwise).",
+    "PreCommit hook: Check for any new unsafe blocks in the diff and require inline safety contract comments before allowing the commit. Parseable via regex matching 'unsafe {' without a preceding '//' comment line.",
+    "Cargo.toml dependency audit hook: On any Cargo.toml change, verify that adapter crates only add orbflow-core as an internal dependency and flag any lateral adapter-to-adapter dependency additions."
+  ],
+  "uncertain": []
+}

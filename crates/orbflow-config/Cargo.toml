@@ -1,0 +1,19 @@
+[package]
+name = "orbflow-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Configuration loading and logger setup"
+
+[dependencies]
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }

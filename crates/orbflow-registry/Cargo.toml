@@ -1,0 +1,22 @@
+[package]
+name = "orbflow-registry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Plugin registry client and manifest types for the Orbflow marketplace"
+
+[dependencies]
+orbflow-core = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+flate2 = "1"
+tar = "0.4"
+sha2 = "0.10"
+uuid = { workspace = true }

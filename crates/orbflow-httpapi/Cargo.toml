@@ -1,0 +1,38 @@
+[package]
+name = "orbflow-httpapi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Axum-based HTTP REST API for Orbflow"
+
+[dependencies]
+orbflow-config = { workspace = true }
+orbflow-core = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tower_governor = { workspace = true }
+governor = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+dashmap = { workspace = true }
+rust-embed = { workspace = true }
+uuid = { workspace = true }
+subtle = { workspace = true }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+orbflow-memstore = { workspace = true }
+orbflow-testutil = { workspace = true }
+tokio-test = { workspace = true }
+reqwest = { workspace = true }
+http-body-util = { workspace = true }
+parking_lot = { workspace = true }
+bytes = { workspace = true }

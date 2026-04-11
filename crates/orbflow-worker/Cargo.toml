@@ -1,0 +1,23 @@
+[package]
+name = "orbflow-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Task executor that subscribes to bus and routes to NodeExecutor implementations"
+
+[dependencies]
+orbflow-core = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+thiserror = { workspace = true }
+opentelemetry = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+
+[dev-dependencies]
+orbflow-testutil = { workspace = true }
+tokio-test = { workspace = true }

@@ -1,0 +1,17 @@
+[package]
+name = "orbflow-testutil"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Mock implementations for testing (bus, store, executor)"
+
+[dependencies]
+orbflow-core = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+chrono = { workspace = true }

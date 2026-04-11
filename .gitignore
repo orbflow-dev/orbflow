@@ -1,0 +1,117 @@
+# ── Rust ──────────────────────────────────────────────────────────────────────
+target/
+bin/
+*.pdb
+
+# ── Node / pnpm ──────────────────────────────────────────────────────────────
+node_modules/
+.pnpm-store/
+.npm/
+*.tgz
+
+# ── Next.js ──────────────────────────────────────────────────────────────────
+.next/
+out/
+
+# ── Turborepo ────────────────────────────────────────────────────────────────
+.turbo/
+
+# ── Environment & Secrets ────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+
+# ── Playwright ──────────────────────────────────────────────────────────────
+playwright-cli/
+.playwright-cli/
+
+# ── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ── Editor / IDE ─────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── Testing & Coverage ──────────────────────────────────────────────────────
+coverage/
+*.lcov
+*.out
+*.coverprofile
+.nyc_output/
+
+# ── Internal docs (planning, research, reviews — not for public repo) ────────
+docs/.internal/
+
+# ── NATS embedded data ──────────────────────────────────────────────────────
+.orbflow-nats-dev/
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ── TypeScript ───────────────────────────────────────────────────────────────
+*.tsbuildinfo
+next-env.d.ts
+
+# ── Docker volumes (local) ──────────────────────────────────────────────────
+pgdata/
+natsdata/
+
+# ── Claude Code / AI tools ──────────────────────────────────────────────────
+# CLAUDE.md is intentionally tracked — it provides project context for Claude Code
+.claude/
+.agents/
+.codex/
+.playwright-mcp/
+.desloppify/
+.cursorrules
+.cursorignore
+.aider*
+copilot-instructions.md
+.github/copilot-instructions.md
+
+# ── Dev artifacts (not for production) ──────────────────────────────────────
+*.png
+.reflect_report*.txt
+screenshots/
+SECURITY-REVIEW*.md
+REVIEW-REPORT.md
+AGENTS.md
+dependency-audit*.md
+review-findings*.md
+review-builtins-findings*.md
+beforesave.yml
+fresh.yml
+intercepted.yml
+ready-to-save.yml
+reload-dropdown.yml
+after-close.yaml
+after-install.yaml
+builder-tab.yaml
+confirm-uninstall.yaml
+current-state.yaml
+detail-uninstall.yaml
+e2e-*.yaml
+marketplace-*.yaml
+mp-*.yaml
+picker-*.yaml
+reloaded.yaml
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.egg-info/
+
+# ── Generated code ──────────────────────────────────────────────────────────
+gen/
+
+# ── Vercel ───────────────────────────────────────────────────────────────────
+.vercel/

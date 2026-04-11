@@ -1,0 +1,27 @@
+[package]
+name = "orbflow-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "DAG workflow engine with saga compensation and crash recovery"
+
+[dependencies]
+orbflow-core = { workspace = true }
+orbflow-cel = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+dashmap = { workspace = true }
+opentelemetry = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+
+[dev-dependencies]
+orbflow-memstore = { workspace = true }
+orbflow-testutil = { workspace = true }
+tokio-test = { workspace = true }

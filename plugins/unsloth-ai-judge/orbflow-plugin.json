@@ -1,0 +1,113 @@
+{
+  "author": "Unsloth",
+  "category": "ai",
+  "color": "#F59E0B",
+  "description": "Score and evaluate content against criteria using an LLM",
+  "icon": "check-circle",
+  "inputs": [
+    {
+      "description": "Content to evaluate",
+      "key": "content",
+      "label": "Content",
+      "required": true,
+      "type": "string"
+    },
+    {
+      "description": "Evaluation criteria or rubric",
+      "key": "criteria",
+      "label": "Criteria",
+      "required": true,
+      "type": "string"
+    },
+    {
+      "description": "Reference/expected output for comparison",
+      "key": "reference",
+      "label": "Reference",
+      "type": "string"
+    }
+  ],
+  "language": "python",
+  "license": "Apache-2.0",
+  "name": "unsloth-ai-judge",
+  "node_types": [
+    "plugin:ai-judge"
+  ],
+  "orbflow_version": ">=0.1.0",
+  "outputs": [
+    {
+      "description": "Numeric score (0-100)",
+      "key": "score",
+      "label": "Score",
+      "type": "number"
+    },
+    {
+      "description": "Whether score meets threshold",
+      "key": "pass",
+      "label": "Pass",
+      "type": "boolean"
+    },
+    {
+      "key": "reasoning",
+      "label": "Reasoning",
+      "type": "string"
+    },
+    {
+      "description": "Per-criterion breakdown",
+      "key": "scores",
+      "label": "Detailed Scores",
+      "type": "object"
+    },
+    {
+      "key": "model",
+      "label": "Model",
+      "type": "string"
+    },
+    {
+      "key": "usage",
+      "label": "Usage",
+      "type": "object"
+    }
+  ],
+  "parameters": [
+    {
+      "default": "gpt-4o-mini",
+      "key": "model",
+      "label": "Model",
+      "type": "string"
+    },
+    {
+      "default": 70,
+      "description": "Minimum score to pass (0-100)",
+      "key": "pass_threshold",
+      "label": "Pass Threshold",
+      "type": "number"
+    },
+    {
+      "default": 100,
+      "key": "scale_max",
+      "label": "Scale Max",
+      "type": "number"
+    },
+    {
+      "credential_type": "openai,anthropic,google_ai",
+      "description": "API key credential for the LLM provider",
+      "key": "credential_id",
+      "label": "API Credential",
+      "required": true,
+      "type": "credential"
+    }
+  ],
+  "protocol": {
+    "Grpc": {
+      "default_port": 50051
+    }
+  },
+  "tags": [
+    "unsloth",
+    "ai",
+    "evaluation",
+    "scoring",
+    "llm"
+  ],
+  "version": "0.2.0"
+}

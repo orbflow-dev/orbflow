@@ -1,0 +1,128 @@
+{
+  "key_principles": [
+    "Scope reviews to the diff, not the entire codebase. Feeding whole files causes hallucinated context and dilutes focus. Use `git diff main...HEAD` as the primary input, supplemented with targeted file reads only for imports and type definitions referenced by changed lines.",
+    "Always enforce a structured output format with mandatory fields (severity, location, issue, fix). Without format constraints, LLMs produce polite but useless prose like 'looks good, consider adding error handling.'",
+    "Demand concrete code snippets in every finding. A review comment without a proposed fix is noise. Require verbatim code excerpts for evidence and specific replacement code for remediation.",
+    "Apply prompt routing: use lightweight static analysis (linting, type-checking) to pre-filter which categories of issues to ask the LLM about. This reduced false positives from 225 to 20 in the SAST-Genius study.",
+    "Avoid overcorrection bias from overly detailed prompts. Research (arXiv 2603.00539) shows that requiring explanations and suggested corrections in complex prompts makes LLMs more prone to flagging correct code as erroneous.",
+    "Force the LLM to read source files before commenting. Prompts that don't require reading actual imports, type definitions, and surrounding context produce surface-level findings that miss architectural issues.",
+    "Explicitly exclude style/formatting comments. Without this constraint, LLMs fill reviews with low-value style nitpicks that drown out real bugs and security issues.",
+    "Use persona-specific prompts rather than generic checklists. A security-focused persona finds different issues than a performance-focused one. Generic OWASP checklists without code context produce boilerplate findings.",
+    "Limit review scope per pass. For diffs over 500 lines, review file-by-file. LLMs lose coherence on large inputs and fall back to shallow pattern matching.",
+    "Include a validation phase. After generating findings, have a second pass cross-check each finding against the actual codebase to filter hallucinations before presenting to developers."
+  ],
+  "concrete_examples": [
+    {
+      "label": "Anti-pattern: Unstructured review prompt",
+      "before": "Review this code for issues and let me know what you find.",
+      "after": "Review the following code. For each issue found, provide:\n1. **Severity** (critical / warning / suggestion)\n2. **Location** (file and line reference)\n3. **Issue** (what's wrong)\n4. **Fix** (concrete code change)\n\nFocus on: bugs and logic errors, security vulnerabilities, performance issues. Do NOT comment on style preferences or formatting."
+    },
+    {
+      "label": "Anti-pattern: Reviewing entire codebase instead of changes",
+      "before": "Review all the code in this repository for security vulnerabilities.",
+      "after": "Review only the changes in `git diff main...HEAD`. For each changed function, read the full file to understand context, then check:\n- Does the change introduce a new attack surface?\n- Are inputs from the diff properly validated?\n- Do error paths leak sensitive data?\nIgnore unchanged code unless directly called by changed code."
+    },
+    {
+      "label": "Anti-pattern: Generic OWASP checklist without context",
+      "before": "Check this code against the OWASP Top 10.",
+      "after": "You are a security reviewer for a Rust/Axum HTTP API that handles workflow automation. Review the following diff for:\n- SQL injection in any raw query construction (we use sqlx with parameterized queries)\n- Authentication bypass in middleware changes\n- Unsafe deserialization of user-provided JSON workflow definitions\n- Credential leakage in error responses or logs\nIgnore OWASP categories not applicable to this stack (e.g., XXE in a JSON-only API)."
+    },
+    {
+      "label": "Anti-pattern: No code snippet requirement",
+      "before": "List any problems you see in this pull request.",
+      "after": "For each finding, you MUST include:\n- EVIDENCE: the exact code lines (quoted verbatim) that exhibit the issue\n- REMEDIATION: a concrete code patch showing the fix\n- IMPACT: one sentence describing what can go wrong if unfixed\n\nIf you cannot quote specific code lines, do not report the finding."
+    },
+    {
+      "label": "Anti-pattern: Single monolithic review pass",
+      "before": "Do a comprehensive code review covering security, performance, correctness, and style.",
+      "after": "Pass 1 - Correctness: Review for logic bugs, off-by-one errors, null/None handling, and missing edge cases.\nPass 2 - Security: Review for injection, auth bypass, data leakage, and unsafe operations.\nPass 3 - Performance: Review for N+1 queries, unnecessary allocations, and blocking calls in async contexts.\n\nRun each pass separately. Do not mix categories."
+    }
+  ],
+  "anti_patterns": [
+    {
+      "name": "Over-broad scoping",
+      "description": "Asking the LLM to review an entire repository or all files instead of focusing on the actual changes (diff). This overwhelms the context window, causes the model to lose coherence, and produces shallow pattern-matching findings instead of deep analysis.",
+      "why_it_fails": "Context windows are finite. A 1000-line diff fills the window, leaving no room for reasoning. The model falls back to generic observations about the first and last sections, missing the middle entirely.",
+      "what_to_do_instead": "Scope to `git diff` output. For large diffs, split by file. Supplement with targeted reads of imported types and called functions only."
+    },
+    {
+      "name": "Generic OWASP/security checklists without code context",
+      "description": "Prompting with 'check against OWASP Top 10' without specifying the technology stack, framework, or which categories are relevant to the codebase.",
+      "why_it_fails": "The LLM generates boilerplate findings for all 10 categories regardless of applicability. A Rust API will never have XXE vulnerabilities, but the LLM will report them anyway. This floods the output with false positives and erodes developer trust.",
+      "what_to_do_instead": "Specify the exact stack (language, framework, database), list only applicable vulnerability categories, and describe the application's threat model."
+    },
+    {
+      "name": "Prompts that don't force reading source files",
+      "description": "Pasting only a diff or code snippet without instructing the LLM to read imports, type definitions, and surrounding context from the actual files.",
+      "why_it_fails": "The LLM cannot verify whether a variable is properly typed, whether an imported function handles errors, or whether the calling code expects a different return type. It hallucinates the behavior of unread code.",
+      "what_to_do_instead": "Explicitly instruct: 'Before commenting on any function, read the full file containing it. Follow imports to understand types and error handling contracts. Only comment on behavior you can verify from source.'"
+    },
+    {
+      "name": "Missing output format constraints",
+      "description": "Not specifying how findings should be structured, leading to free-form prose responses.",
+      "why_it_fails": "Without format constraints, LLMs produce walls of text mixing observations, suggestions, compliments, and caveats. Developers cannot quickly triage or act on findings. Critical issues get buried in paragraphs of 'overall the code looks good.'",
+      "what_to_do_instead": "Require a fixed schema per finding: severity level, file:line location, issue description (one sentence), evidence (verbatim code), impact (one sentence), and remediation (code patch)."
+    },
+    {
+      "name": "Not demanding concrete code snippets",
+      "description": "Allowing the LLM to describe issues in abstract terms without quoting the problematic code or showing a fix.",
+      "why_it_fails": "Abstract descriptions like 'consider adding error handling' are not actionable. Developers must re-read the code themselves to figure out where and how. This negates the time-saving benefit of AI review. It also allows the LLM to make claims about code that does not exist (hallucination).",
+      "what_to_do_instead": "Add a hard constraint: 'Every finding MUST include the exact problematic code quoted verbatim and a concrete replacement. If you cannot quote specific lines, do not report the finding.'"
+    },
+    {
+      "name": "Overcorrection bias from complex prompts",
+      "description": "Adding too many requirements, explanations, and correction steps to a single prompt, which causes the LLM to assume flaws exist and suggest unnecessary modifications.",
+      "why_it_fails": "Research shows that detailed prompts requiring explicit explanations and suggested corrections counterintuitively increase misjudgment rates. The model's Requirement Conformance Recognition Rate drops, and correct code is misclassified as erroneous.",
+      "what_to_do_instead": "Keep review prompts focused on one concern at a time. Use multi-pass reviews with separate, simple prompts rather than one complex prompt covering everything."
+    },
+    {
+      "name": "No validation or cross-check phase",
+      "description": "Presenting raw LLM findings directly to developers without any verification step.",
+      "why_it_fails": "29-45% of AI-generated security findings contain inaccuracies. After 3-5 false positive incidents, developers stop trusting AI output entirely and begin ignoring valid findings too. This is the trust erosion cycle.",
+      "what_to_do_instead": "Add a validation phase: after generating findings, run a second LLM pass or static analysis check to verify each finding against the actual codebase. Filter out unverifiable claims before presenting results."
+    }
+  ],
+  "implementation_recommendations": [
+    "Split review prompts into frontend and backend specializations. The Rust backend (orbflow-engine, orbflow-httpapi, orbflow-postgres) needs prompts focused on: unsafe code, SQL injection via sqlx, error handling with OrbflowError variants, async/await pitfalls, and trait implementation correctness. The TypeScript frontend (apps/web, packages/orbflow-core) needs prompts focused on: React hook dependency arrays, Zustand store immutability, XSS in dynamic rendering, and proper TypeScript type narrowing.",
+    "Use `git diff main...HEAD` as the canonical input for all review prompts. Pipe this through a pre-filter that separates changes by crate/package so each review pass operates on a focused subset.",
+    "Implement prompt routing based on file type and changed content. If the diff touches `orbflow-httpapi`, route to the security-focused prompt. If it touches `orbflow-engine/dag.go`, route to the correctness-focused prompt. If it touches React components, route to the UI/UX-focused prompt.",
+    "Create a validation post-processing step in Claude Code hooks (PostToolUse) that checks each finding against the actual source before displaying it. Require the reviewer to quote verbatim code as evidence — findings without verbatim quotes are automatically filtered.",
+    "For orbflow's CEL expression evaluation (orbflow-cel), create a specialized prompt that understands the CEL DSL and checks for injection risks in user-provided expressions. Generic security prompts will not catch CEL-specific issues.",
+    "Enforce the structured output format (severity/location/issue/fix) via a JSON schema in the prompt. Parse the output programmatically and reject malformed responses rather than showing raw text to developers.",
+    "Limit each review pass to 500 lines of diff. For larger PRs, split by crate (Rust) or by component directory (frontend) and run separate focused reviews."
+  ],
+  "prompt_template_fragments": [
+    "## Scope Constraint\nReview ONLY the code changes shown in the diff below. Do not review unchanged code unless it is directly called by, imported into, or affected by the changed lines. Before commenting on any function, read the full source file to verify your understanding of types, imports, and error handling contracts.",
+    "## Output Format (MANDATORY)\nFor each issue, output exactly this structure:\n\n**[SEVERITY]** CRITICAL | HIGH | MEDIUM | LOW\n**[FILE]** filename:line_range\n**[ISSUE]** One sentence describing what is wrong.\n**[EVIDENCE]** Verbatim code excerpt showing the problem.\n**[IMPACT]** One sentence describing what can go wrong.\n**[FIX]** Concrete code patch showing the remediation.\n\nDo not include preambles, summaries, or compliments. Output only the findings list. If no issues are found, output: NO_ISSUES_FOUND.",
+    "## Exclusions\nDo NOT report:\n- Style preferences or formatting opinions\n- Suggestions to add comments or documentation\n- Hypothetical issues that require assumptions about code you have not read\n- Issues already caught by the project's linter (clippy for Rust, eslint for TypeScript)\n\nIf you cannot quote the exact problematic code from the diff or source files, do not report the finding.",
+    "## Backend Review Persona (Rust/Axum)\nYou are a senior Rust engineer reviewing changes to a distributed workflow engine. The codebase uses: Axum (HTTP), tonic (gRPC), sqlx (PostgreSQL), NATS JetStream (messaging), and a custom CEL evaluator. Focus on:\n- Ownership and lifetime correctness\n- Unsafe code or raw pointer usage\n- SQL injection in raw queries (parameterized queries via sqlx are safe)\n- Error propagation: are OrbflowError variants used correctly?\n- Async safety: no blocking calls in async contexts\n- Race conditions in concurrent instance handling (DashMap + Arc<Mutex>)",
+    "## Frontend Review Persona (React/TypeScript)\nYou are a senior React/TypeScript engineer reviewing changes to a workflow builder UI. The codebase uses: Next.js 15, Zustand (state management), React Flow (graph canvas), and a headless SDK in packages/orbflow-core. Focus on:\n- React hook rules violations (conditional hooks, missing deps)\n- Zustand store mutations (must be immutable — return new objects)\n- XSS risks in dynamically rendered workflow node content\n- Type safety: are TypeScript types properly narrowed, no unsafe `any` casts?\n- Component prop drilling vs store usage consistency",
+    "## Multi-Pass Review Strategy\nPerform the review in separate focused passes. Do NOT mix concerns across passes.\n\nPass 1 — CORRECTNESS: Logic bugs, off-by-one errors, null handling, missing edge cases, incorrect type usage.\nPass 2 — SECURITY: Injection attacks, auth/authz bypass, data leakage in errors/logs, unsafe deserialization.\nPass 3 — PERFORMANCE: N+1 queries, unnecessary clones/allocations, blocking in async, missing indexes.\n\nReport findings from each pass under a separate heading.",
+    "## Hallucination Guard\nBefore reporting any finding:\n1. Verify you can see the problematic code in the diff or have read it from the source file.\n2. Confirm the issue is not already handled by surrounding code (check error handling, validation, or guard clauses).\n3. If you are uncertain whether the issue is real, prefix the finding with [UNCERTAIN] and explain what additional context would confirm or deny it.\n\nDo not fabricate function signatures, variable names, or behavior you have not verified from source."
+  ],
+  "sources": [
+    "https://diffray.ai/blog/llm-hallucinations-code-review/ — Comprehensive study on LLM hallucination rates (29-45% vulnerability rate) and mitigation strategies (96% reduction with combined approaches)",
+    "https://graphite.com/guides/effective-prompt-engineering-ai-code-reviews — Graphite guide on structured prompts, persona usage, and prompt templates for AI code reviews",
+    "https://crashoverride.com/blog/prompting-llm-security-reviews — Practical guide on five elements of effective security review prompts: persona, context, examples, specific instructions, output format",
+    "https://5ly.co/blog/ai-prompts-for-code-review/ — 2026 guide to AI code review prompts covering architecture, security, and anti-pattern detection",
+    "https://www.anthonybordonaro.com/ai-toolkit/code-review-prompt — Structured code review prompt template requiring severity, location, issue, and fix for every finding",
+    "https://arxiv.org/html/2603.00539 — Research paper on overcorrection bias: detailed prompts cause LLMs to misclassify correct code as non-conforming",
+    "https://arxiv.org/html/2510.12186v1 — iCodeReviewer: Mixture of Prompts approach for secure code review with prompt routing",
+    "https://github.com/nurettincoban/diff2ai — Tool for converting git diffs into focused AI code review prompts",
+    "https://github.com/baz-scm/awesome-reviewers — Collection of system prompts for agentic code review",
+    "https://dextralabs.com/blog/ai-driven-code-reviews-prompts/ — DextraLabs prompt strategies emphasizing scope, context, and output constraints",
+    "https://medium.com/data-science-collective/youre-using-ai-to-write-code-you-re-not-using-it-to-review-code-728e5ec2576e — Seven AI prompts for code review and security audits with structured output",
+    "https://odsc.medium.com/context-engineering-for-ai-code-reviews-fix-critical-bugs-with-outside-diff-impact-slicing-6d1ec2fc87e9 — Context engineering using impact slicing to catch cross-boundary bugs"
+  ],
+  "relevance_to_orbflow": "Orbflow is a distributed workflow automation engine with a Rust backend (ports-and-adapters architecture across 15+ crates) and a React/TypeScript frontend (monorepo with headless SDK). This research directly applies because orbflow's review needs span two fundamentally different technology stacks that require separate, specialized review prompts — generic prompts would miss Rust-specific issues like ownership errors, unsafe async patterns, and OrbflowError variant misuse, while also missing React-specific issues like Zustand store mutations and hook dependency violations. The anti-patterns identified are especially dangerous for orbflow: over-broad scoping would overwhelm reviews of the 15-crate workspace, generic OWASP checklists would miss CEL expression injection risks specific to orbflow-cel, and unstructured output would make findings across orbflow-engine, orbflow-httpapi, and orbflow-postgres impossible to triage. Orbflow's use of DashMap with Arc<Mutex> for per-instance locking, event sourcing with snapshots, and the NodeExecutor trait pattern all require domain-aware review prompts that understand these architectural patterns rather than applying generic code review heuristics.",
+  "automation_hooks": [
+    "PreToolUse hook on Bash(git commit): Automatically trigger a diff-scoped code review before commits. Extract `git diff --cached` and route it through the appropriate review prompt (Rust or TypeScript) based on file extensions in the diff.",
+    "PostToolUse hook on Edit/Write: After any file modification, run a lightweight validation pass checking only the modified file against its type-specific review checklist (Rust safety or React hooks rules).",
+    "Slash command `/review-pr`: Orchestrate a multi-pass review pipeline — (1) extract `git diff main...HEAD`, (2) split by crate/package, (3) run backend review persona on .rs files, (4) run frontend review persona on .ts/.tsx files, (5) aggregate and deduplicate findings, (6) output structured JSON.",
+    "Slash command `/review-security`: Run security-focused review with orbflow-specific context (CEL injection, credential store encryption, SQL parameterization in orbflow-postgres, CORS/rate-limiting in orbflow-httpapi).",
+    "Claude Code hook for validation phase: After any review tool generates findings, automatically run a validation sub-agent that cross-checks each finding by reading the referenced source files and confirming the evidence quotes match actual code. Filter findings that fail validation.",
+    "Git pre-push hook integration: Run `git diff origin/main...HEAD` through the structured review prompt and block push if any CRITICAL severity findings are reported. Output findings to a temporary file for developer review.",
+    "Automated prompt routing via file-path matching: Configure rules that map changed file paths to specialized review prompts — `crates/orbflow-engine/**` routes to correctness+concurrency prompt, `crates/orbflow-httpapi/**` routes to security+API prompt, `apps/web/src/core/**` routes to React+Zustand prompt."
+  ],
+  "uncertain": []
+}

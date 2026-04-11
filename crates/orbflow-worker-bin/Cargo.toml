@@ -1,0 +1,23 @@
+[package]
+name = "orbflow-worker-bin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Orbflow worker binary (task executor)"
+
+[[bin]]
+name = "orbflow-worker"
+path = "src/main.rs"
+
+[dependencies]
+orbflow-core = { workspace = true }
+orbflow-worker = { workspace = true }
+orbflow-natsbus = { workspace = true }
+orbflow-builtins = { workspace = true }
+orbflow-plugin = { workspace = true }
+orbflow-registry = { workspace = true }
+orbflow-config = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+dotenvy = { workspace = true }

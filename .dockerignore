@@ -1,0 +1,39 @@
+# Version control & CI
+.git
+.github
+.claude
+.playwright-mcp
+
+# Rust build artifacts (can be multiple GB)
+target/
+
+# Node.js / Frontend
+**/node_modules/
+**/.next/
+apps/web/
+packages/
+
+# Docker (prevent recursive context)
+Dockerfile*
+docker-compose*.yml
+
+# Environment & secrets
+.env
+.env.*
+
+# Documentation (keep README for COPY if needed)
+*.md
+docs/
+
+# IDE & OS
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+.DS_Store
+
+# Test & coverage artifacts
+coverage/
+*.log
+.cargo/

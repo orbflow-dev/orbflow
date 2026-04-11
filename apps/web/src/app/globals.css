@@ -1,0 +1,787 @@
+@import "tailwindcss";
+@import "../core/styles/execution.css";
+
+@theme {
+  /* -- Brand Colors ----------------------------- */
+  --color-obsidian: #0A0A0C;
+  --color-charcoal: #141417;
+  --color-slate-surface: #1E1E22;
+  --color-elevated: #26262E;
+  --color-electric-indigo: #7C5CFC;
+  --color-neon-cyan: #22D3EE;
+  --color-ghost-white: #FAFAFA;
+
+  --color-port-string: #10B981;
+  --color-port-number: #F59E0B;
+  --color-port-boolean: #A855F7;
+  --color-port-object: #3B82F6;
+  --color-port-array: #EC4899;
+
+  /* -- Semantic Theme Colors -------------------- */
+  --color-orbflow-bg: var(--orbflow-bg);
+  --color-orbflow-surface: var(--orbflow-surface);
+  --color-orbflow-surface-hover: var(--orbflow-surface-hover);
+  --color-orbflow-elevated: var(--orbflow-elevated);
+  --color-orbflow-text: var(--orbflow-text);
+  --color-orbflow-text-secondary: var(--orbflow-text-secondary);
+  --color-orbflow-text-muted: var(--orbflow-text-muted);
+  --color-orbflow-text-faint: var(--orbflow-text-faint);
+  --color-orbflow-text-ghost: var(--orbflow-text-ghost);
+  --color-orbflow-border: var(--orbflow-border);
+  --color-orbflow-border-hover: var(--orbflow-border-hover);
+  --color-orbflow-glass-bg: var(--orbflow-glass-bg);
+  --color-orbflow-glass-border: var(--orbflow-glass-border);
+  --color-orbflow-node-bg: var(--orbflow-node-bg);
+  --color-orbflow-node-bg-hover: var(--orbflow-node-bg-hover);
+  --color-orbflow-node-border: var(--orbflow-node-border);
+  --color-orbflow-node-border-selected: var(--orbflow-node-border-selected);
+  --color-orbflow-node-label: var(--orbflow-node-label);
+  --color-orbflow-edge-color: var(--orbflow-edge-color);
+  --color-orbflow-edge-hover: var(--orbflow-edge-hover);
+  --color-orbflow-shadow: var(--orbflow-shadow);
+  --color-orbflow-backdrop: var(--orbflow-backdrop);
+  --color-orbflow-add-btn-bg: var(--orbflow-add-btn-bg);
+  --color-orbflow-add-btn-border: var(--orbflow-add-btn-border);
+  --color-orbflow-add-btn-color: var(--orbflow-add-btn-color);
+  --color-orbflow-controls-bg: var(--orbflow-controls-bg);
+  --color-orbflow-controls-btn-hover: var(--orbflow-controls-btn-hover);
+
+  /* -- Typography Scale ------------------------- */
+  --text-micro: 0.5rem;
+  --text-micro--line-height: 1;
+  --text-caption: 0.5625rem;
+  --text-caption--line-height: 1.2;
+  --text-body-sm: 0.625rem;
+  --text-body-sm--line-height: 1.4;
+  --text-body: 0.6875rem;
+  --text-body--line-height: 1.4;
+  --text-body-lg: 0.75rem;
+  --text-body-lg--line-height: 1.5;
+  --text-heading: 0.8125rem;
+  --text-heading--line-height: 1.4;
+  --text-title: 0.875rem;
+  --text-title--line-height: 1.4;
+  --text-display: 0.9375rem;
+  --text-display--line-height: 1.3;
+
+  /* -- Easings ---------------------------------- */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* -- Animations ------------------------------- */
+  --animate-fade-in-up: fadeInUp 0.5s var(--ease-out-expo) both;
+  --animate-fade-in: fadeIn 0.4s ease both;
+  --animate-slide-in-right: slideInRight 0.4s var(--ease-out-expo) both;
+  --animate-slide-in-left: slideInLeft 0.4s var(--ease-out-expo) both;
+  --animate-scale-in: scaleIn 0.3s var(--ease-out-expo) both;
+  --animate-pulse-soft: pulse-soft 2s ease-in-out infinite;
+  --animate-shimmer: shimmer 2s ease-in-out infinite;
+  --animate-float: float 3s ease-in-out infinite;
+  --animate-flow-dash: flow-dash 1s linear infinite;
+  --animate-modal-backdrop-in: modalBackdropIn 0.2s ease-out;
+  --animate-modal-slide-up: modalSlideUp 0.3s var(--ease-out-expo) both;
+  --animate-edge-menu-in: edgeMenuIn 0.15s ease-out;
+  --animate-exec-detail-slide: execDetailSlide 0.25s var(--ease-out-expo) both;
+  --animate-exec-step-pulse: execStepPulse 2s ease-in-out infinite;
+  --animate-sticky-snap: stickySnapSettle 0.25s var(--ease-spring) both;
+  --animate-sticky-detach: stickyDetach 0.2s var(--ease-out-expo) both;
+  --animate-sticky-badge-pop: stickyBadgePop 0.3s var(--ease-spring) both;
+
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes slideInRight {
+    from { opacity: 0; transform: translateX(20px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes slideInLeft {
+    from { opacity: 0; transform: translateX(-20px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes scaleIn {
+    from { opacity: 0; transform: scale(0.95); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  @keyframes gaugeArcDraw {
+    from { stroke-dasharray: 0 var(--gauge-circumference); opacity: 0.4; }
+    to { stroke-dasharray: var(--gauge-arc) calc(var(--gauge-circumference) - var(--gauge-arc)); opacity: 1; }
+  }
+  @keyframes pulse-soft {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  @keyframes shimmer {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(200%); }
+  }
+  @keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-6px); }
+  }
+  @keyframes flow-dash {
+    to { stroke-dashoffset: -20; }
+  }
+  @keyframes modalBackdropIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes modalSlideUp {
+    from { opacity: 0; transform: translateY(24px) scale(0.97); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  @keyframes edgeMenuIn {
+    from { opacity: 0; transform: scale(0.9); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  @keyframes execDetailSlide {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes execStepPulse {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
+  }
+  @keyframes stickyDropGlow {
+    0%, 100% { box-shadow: 0 0 12px 2px var(--sticky-glow-color); }
+    50%      { box-shadow: 0 0 22px 6px var(--sticky-glow-color); }
+  }
+  @keyframes stickySnapSettle {
+    0%   { transform: scale(1); }
+    40%  { transform: scale(1.04); }
+    100% { transform: scale(1); }
+  }
+  @keyframes stickyDetach {
+    0%   { transform: scale(1); }
+    30%  { transform: scale(0.97); }
+    100% { transform: scale(1); }
+  }
+  @keyframes stickyBadgePop {
+    0%   { transform: scale(0); opacity: 0; }
+    60%  { transform: scale(1.15); opacity: 1; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+}
+
+/* -- Base ------------------------------------- */
+
+@layer base {
+  :root {
+    /* Dark theme (default) */
+    --orbflow-bg: #0A0A0C;
+    --orbflow-surface: #141417;
+    --orbflow-surface-hover: #1E1E22;
+    --orbflow-elevated: #26262E;
+    --orbflow-text: #FAFAFA;
+    --orbflow-text-secondary: rgba(255, 255, 255, 0.78);
+    --orbflow-text-muted: rgba(255, 255, 255, 0.55);
+    --orbflow-text-faint: rgba(255, 255, 255, 0.35);
+    --orbflow-text-ghost: rgba(255, 255, 255, 0.15);
+    --orbflow-border: rgba(255, 255, 255, 0.06);
+    --orbflow-border-hover: rgba(255, 255, 255, 0.12);
+    --orbflow-glass-bg: rgba(20, 20, 23, 0.85);
+    --orbflow-glass-border: rgba(255, 255, 255, 0.06);
+    --orbflow-node-bg: #16161b;
+    --orbflow-node-bg-hover: #1a1a20;
+    --orbflow-node-border: rgba(255, 255, 255, 0.08);
+    --orbflow-node-border-selected: rgba(255, 255, 255, 0.2);
+    --orbflow-node-label: rgba(255, 255, 255, 0.78);
+    --orbflow-node-label-shadow: rgba(0, 0, 0, 0.6);
+    --orbflow-edge-color: rgba(255, 255, 255, 0.12);
+    --orbflow-edge-hover: rgba(255, 255, 255, 0.25);
+    --orbflow-handle-bg: rgba(255, 255, 255, 0.22);
+    --orbflow-handle-border: #0e0e10;
+    --orbflow-scrollbar-thumb: rgba(255, 255, 255, 0.08);
+    --orbflow-scrollbar-hover: rgba(255, 255, 255, 0.16);
+    --orbflow-controls-bg: rgba(20, 20, 23, 0.9);
+    --orbflow-controls-fill: rgba(255, 255, 255, 0.5);
+    --orbflow-controls-fill-hover: rgba(255, 255, 255, 0.8);
+    --orbflow-controls-btn-hover: rgba(255, 255, 255, 0.06);
+    --orbflow-shadow: rgba(0, 0, 0, 0.4);
+    --orbflow-shadow-heavy: rgba(0, 0, 0, 0.5);
+    --orbflow-backdrop: rgba(0, 0, 0, 0.6);
+    --orbflow-add-btn-bg: rgba(255, 255, 255, 0.06);
+    --orbflow-add-btn-border: rgba(255, 255, 255, 0.1);
+    --orbflow-add-btn-color: rgba(255, 255, 255, 0.3);
+    --orbflow-edge-selected: #7C5CFC;
+    --orbflow-exec-active: #4A9AAF;
+    --orbflow-exec-completed: #10B981;
+    --orbflow-exec-failed: #D9454F;
+    --orbflow-exec-cancelled: #C49030;
+    --orbflow-trigger-badge: #EF4444;
+
+    /* Diff visualization */
+    --orbflow-diff-added: var(--color-success, #10b981);
+    --orbflow-diff-removed: var(--color-error, #ef4444);
+    --orbflow-diff-modified: var(--color-warning, #f59e0b);
+
+    /* Colored shadow (light-mode only) */
+    --orbflow-shadow-colored: transparent;
+  }
+
+  [data-theme="light"] {
+    --orbflow-bg: #EEF1F6;
+    --orbflow-surface: #FFFFFF;
+    --orbflow-surface-hover: #E8EDF5;
+    --orbflow-elevated: #DEE5EF;
+    --orbflow-text: #152033;
+    --orbflow-text-secondary: rgba(15, 23, 42, 0.88);
+    --orbflow-text-muted: rgba(15, 23, 42, 0.76);
+    --orbflow-text-faint: rgba(15, 23, 42, 0.64);
+    --orbflow-text-ghost: rgba(15, 23, 42, 0.48);
+    --orbflow-border: rgba(15, 23, 42, 0.14);
+    --orbflow-border-hover: rgba(15, 23, 42, 0.24);
+    --orbflow-glass-bg: rgba(255, 255, 255, 0.94);
+    --orbflow-glass-border: rgba(15, 23, 42, 0.10);
+    --orbflow-node-bg: #FFFFFF;
+    --orbflow-node-bg-hover: #F4F7FB;
+    --orbflow-node-border: rgba(15, 23, 42, 0.14);
+    --orbflow-node-border-selected: rgba(124, 92, 252, 0.5);
+    --orbflow-node-label: rgba(15, 23, 42, 0.86);
+    --orbflow-node-label-shadow: rgba(255, 255, 255, 0.72);
+    --orbflow-edge-color: rgba(15, 23, 42, 0.18);
+    --orbflow-edge-hover: rgba(15, 23, 42, 0.34);
+    --orbflow-handle-bg: rgba(15, 23, 42, 0.20);
+    --orbflow-handle-border: #FFFFFF;
+    --orbflow-scrollbar-thumb: rgba(15, 23, 42, 0.14);
+    --orbflow-scrollbar-hover: rgba(15, 23, 42, 0.24);
+    --orbflow-controls-bg: rgba(255, 255, 255, 0.95);
+    --orbflow-controls-fill: rgba(15, 23, 42, 0.56);
+    --orbflow-controls-fill-hover: rgba(15, 23, 42, 0.78);
+    --orbflow-controls-btn-hover: rgba(15, 23, 42, 0.08);
+    --orbflow-shadow: rgba(15, 23, 42, 0.12);
+    --orbflow-shadow-heavy: rgba(15, 23, 42, 0.18);
+    --orbflow-backdrop: rgba(15, 23, 42, 0.36);
+    --orbflow-add-btn-bg: rgba(15, 23, 42, 0.08);
+    --orbflow-add-btn-border: rgba(15, 23, 42, 0.14);
+    --orbflow-add-btn-color: rgba(15, 23, 42, 0.48);
+    --orbflow-edge-selected: #7C5CFC;
+    --orbflow-exec-active: #3B8DA0;
+    --orbflow-exec-completed: #059669;
+    --orbflow-exec-failed: #C0392B;
+    --orbflow-exec-cancelled: #92400E;
+    --orbflow-trigger-badge: #DC2626;
+
+    /* Diff visualization */
+    --orbflow-diff-added: var(--color-success, #10b981);
+    --orbflow-diff-removed: var(--color-error, #ef4444);
+    --orbflow-diff-modified: var(--color-warning, #f59e0b);
+
+    /* Colored shadow (light-mode only) */
+    --orbflow-shadow-colored: rgba(88, 100, 122, 0.11);
+  }
+
+  body {
+    font-family: var(--font-sora), system-ui, -apple-system, sans-serif;
+    background: var(--orbflow-bg);
+    color: var(--orbflow-text);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  .font-mono, code, pre, kbd, [class*="font-mono"] {
+    font-family: var(--font-mono), 'SF Mono', Menlo, monospace;
+  }
+
+  /* -- CEL syntax highlighting tokens ----------
+     Dark mode: bright colors on dark bg (all pass 4.5:1 on #141417)
+     Light mode: darkened -700 variants on white bg (all pass 4.5:1 on #FFFFFF) */
+  .cel-token-keyword { color: #C084FC; }   /* purple-400 */
+  .cel-token-string  { color: #34D399; }   /* emerald-400 */
+  .cel-token-number  { color: #FBBF24; }   /* amber-400 */
+  .cel-token-operator { color: #22D3EE; }  /* neon-cyan */
+  .cel-token-function { color: #60A5FA; }  /* blue-400 */
+  .cel-token-field   { color: #7C5CFC; } /* electric-indigo — 4.6:1 on #141417 */
+
+  [data-theme="light"] .cel-token-keyword  { color: #7E22CE; }  /* purple-700 -- 7.3:1 */
+  [data-theme="light"] .cel-token-string   { color: #047857; }  /* emerald-700 -- 5.5:1 */
+  [data-theme="light"] .cel-token-number   { color: #B45309; }  /* amber-700 -- 4.7:1 */
+  [data-theme="light"] .cel-token-operator { color: #0E7490; }  /* cyan-700 -- 5.4:1 */
+  [data-theme="light"] .cel-token-function { color: #1D4ED8; }  /* blue-700 -- 7.1:1 */
+  [data-theme="light"] .cel-token-field    { color: #6D28D9; }  /* violet-700 -- 7.8:1 */
+}
+
+/* -- Utility classes -------------------------- */
+
+@layer components {
+  .glass-panel {
+    background: var(--orbflow-glass-bg);
+    border: 1px solid var(--orbflow-glass-border);
+    backdrop-filter: blur(16px);
+    box-shadow: 0 8px 32px var(--orbflow-shadow);
+  }
+
+  .stagger-1 { animation-delay: 50ms; }
+  .stagger-2 { animation-delay: 100ms; }
+  .stagger-3 { animation-delay: 150ms; }
+  .stagger-4 { animation-delay: 200ms; }
+  .stagger-5 { animation-delay: 250ms; }
+  .stagger-6 { animation-delay: 300ms; }
+}
+
+/* -- Scrollbar -------------------------------- */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--orbflow-scrollbar-thumb);
+  border-radius: 100px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--orbflow-scrollbar-hover);
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--orbflow-scrollbar-thumb);
+  opacity: 0.5;
+}
+
+.custom-scrollbar:hover::-webkit-scrollbar-thumb {
+  background: var(--orbflow-scrollbar-hover);
+}
+
+/* -- React Flow Overrides --------------------- */
+
+.react-flow__pane {
+  cursor: grab !important;
+}
+
+.react-flow__pane:active {
+  cursor: grabbing !important;
+}
+
+/* -- Handle base styles ---------------------- */
+
+.react-flow__handle {
+  width: 10px !important;
+  height: 10px !important;
+  border-radius: 50% !important;
+  border: 2px solid var(--orbflow-handle-border) !important;
+  background: var(--orbflow-handle-bg) !important;
+  transition: background 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease !important;
+  z-index: 5;
+}
+
+.react-flow__handle:hover {
+  background: rgba(124, 92, 252, 0.5) !important;
+  box-shadow: 0 0 10px rgba(124, 92, 252, 0.4);
+  border-color: rgba(124, 92, 252, 0.4) !important;
+}
+
+.react-flow__handle.connecting {
+  background: #7C5CFC !important;
+  box-shadow: 0 0 12px rgba(124, 92, 252, 0.5);
+}
+
+/* -- Edge styles ----------------------------- */
+
+.react-flow__edge-path {
+  stroke: var(--orbflow-edge-color) !important;
+  stroke-width: 1.5 !important;
+  transition: stroke 0.2s, stroke-width 0.2s !important;
+}
+
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke: var(--orbflow-edge-hover) !important;
+  stroke-width: 2 !important;
+}
+
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: #7C5CFC !important;
+  stroke-width: 2.5 !important;
+}
+
+.react-flow__connection-line {
+  stroke: #7C5CFC !important;
+  stroke-width: 2 !important;
+  stroke-dasharray: 5 5 !important;
+}
+
+/* -- Controls -------------------------------- */
+
+.react-flow__controls {
+  background: var(--orbflow-controls-bg) !important;
+  border: 1px solid var(--orbflow-glass-border) !important;
+  backdrop-filter: blur(12px) !important;
+  border-radius: 12px !important;
+  padding: 4px !important;
+  overflow: hidden !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 10px 18px rgba(0, 0, 0, 0.18) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 2px !important;
+}
+
+.react-flow__controls-button {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 8px !important;
+  fill: var(--orbflow-controls-fill) !important;
+  transition: all 0.15s !important;
+}
+
+.react-flow__controls-button:hover {
+  background: var(--orbflow-controls-btn-hover) !important;
+  fill: var(--orbflow-controls-fill-hover) !important;
+}
+
+[data-theme="light"] .react-flow__controls {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    0 10px 18px var(--orbflow-shadow-colored, rgba(88, 100, 122, 0.10)) !important;
+}
+
+/* Hide default xyflow controls in builder -- replaced by custom ZoomControls */
+.orbflow-builder .react-flow__controls {
+  display: none !important;
+}
+
+.react-flow__minimap {
+  background: var(--orbflow-controls-bg) !important;
+  border: 1px solid var(--orbflow-glass-border) !important;
+  border-radius: 12px !important;
+  backdrop-filter: blur(16px) !important;
+  overflow: hidden !important;
+}
+
+.react-flow__background {
+  opacity: 0.4;
+}
+
+[data-theme="light"] .react-flow__background {
+  opacity: 0.7;
+}
+
+/* -- Compact Node System --------------------- */
+
+.orbflow-node {
+  position: relative;
+  overflow: visible;
+}
+
+/* Name label below icon box */
+.orbflow-node-label {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.orbflow-node-label__name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--orbflow-node-label);
+  line-height: 1.3;
+  text-align: center;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 4px var(--orbflow-node-label-shadow);
+}
+
+.orbflow-node-label__name--cap {
+  color: var(--orbflow-text-muted);
+  font-weight: 500;
+}
+
+.orbflow-node-label__alias {
+  font-size: 9px;
+  color: var(--orbflow-text-faint);
+  margin-top: 2px;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 3px var(--orbflow-node-label-shadow);
+}
+
+/* Handle variants */
+.orbflow-handle--in,
+.orbflow-handle--out {
+  /* React Flow default positioning works (50% of node height) */
+}
+
+.orbflow-handle--cap-in {
+  background: rgba(56, 189, 248, 0.35) !important;
+}
+
+.orbflow-handle--cap-in:hover {
+  background: rgba(56, 189, 248, 0.7) !important;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.4);
+  border-color: rgba(56, 189, 248, 0.4) !important;
+}
+
+.orbflow-handle--cap {
+  width: 8px !important;
+  height: 8px !important;
+  border-radius: 2px !important;
+  transform: rotate(45deg) !important;
+  background: rgba(56, 189, 248, 0.3) !important;
+  border-color: var(--orbflow-handle-border) !important;
+}
+
+.orbflow-handle--cap:hover {
+  background: rgba(56, 189, 248, 0.6) !important;
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.35);
+  border-color: rgba(56, 189, 248, 0.4) !important;
+}
+
+/* "+" add button on hover */
+.orbflow-add-btn {
+  position: absolute;
+  right: -28px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--orbflow-add-btn-bg);
+  border: 1px solid var(--orbflow-add-btn-border);
+  color: var(--orbflow-add-btn-color);
+  opacity: 0;
+  transition: all 0.2s ease;
+  cursor: pointer;
+  pointer-events: auto;
+  z-index: 10;
+}
+
+.orbflow-node:hover .orbflow-add-btn {
+  opacity: 1;
+}
+
+.orbflow-add-btn:hover {
+  background: rgba(124, 92, 252, 0.15);
+  border-color: rgba(124, 92, 252, 0.3);
+  color: rgba(124, 92, 252, 0.8);
+  transform: translateY(-50%) scale(1.1);
+}
+
+/* Remove default selection ring -- we handle it per-node */
+.react-flow__node.selected > div {
+  box-shadow: none;
+}
+
+/* Focus ring for keyboard navigation */
+.react-flow__node:focus-visible > .orbflow-node > div:first-child {
+  outline: 2px solid rgba(124, 92, 252, 0.5);
+  outline-offset: 2px;
+  border-radius: 18px;
+}
+
+/* -- Execution Timeline ------------------------ */
+/* Animation classes now auto-generated from @theme:
+   animate-exec-detail-slide, animate-exec-step-pulse */
+
+/* JSON syntax highlighting (muted) */
+.exec-json-key { color: #A89BD4; }
+.exec-json-string { color: #86CEAF; }
+.exec-json-number { color: #D4B866; }
+.exec-json-bool { color: #85C5D4; }
+
+/* Light theme overrides */
+[data-theme="light"] .exec-json-key { color: #7C3AED; }
+[data-theme="light"] .exec-json-string { color: #059669; }
+[data-theme="light"] .exec-json-number { color: #D97706; }
+[data-theme="light"] .exec-json-bool { color: #0891B2; }
+
+/* -- Activity page ----------------------------------- */
+
+.activity-shell {
+  position: relative;
+  background:
+    radial-gradient(circle at top left, rgba(124, 92, 252, 0.05), transparent 22%),
+    radial-gradient(circle at top right, rgba(34, 211, 238, 0.04), transparent 18%),
+    var(--orbflow-bg);
+}
+
+.activity-sidebar-panel {
+  position: relative;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--orbflow-surface) 86%, transparent), transparent 20%),
+    color-mix(in srgb, var(--orbflow-bg) 94%, black 6%);
+}
+
+.activity-sidebar-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 18rem;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 12% 12%, rgba(124, 92, 252, 0.10), transparent 26%),
+    radial-gradient(circle at 88% 18%, rgba(34, 211, 238, 0.05), transparent 20%);
+  opacity: 0.7;
+}
+
+.activity-sidebar-hero,
+.activity-detail-header,
+.activity-surface,
+.activity-metric-tile,
+.activity-list-card {
+  position: relative;
+  backdrop-filter: blur(18px);
+}
+
+.activity-sidebar-hero,
+.activity-surface {
+  background: color-mix(in srgb, var(--orbflow-bg) 62%, var(--orbflow-surface) 38%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.03),
+    0 14px 30px rgba(0, 0, 0, 0.16);
+}
+
+.activity-detail-shell {
+  background:
+    radial-gradient(circle at top right, rgba(124, 92, 252, 0.05), transparent 20%),
+    linear-gradient(180deg, color-mix(in srgb, var(--orbflow-bg) 96%, transparent), var(--orbflow-bg));
+}
+
+.activity-detail-header::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.015), transparent 24%),
+    radial-gradient(circle at 18% 18%, rgba(124, 92, 252, 0.06), transparent 18%);
+}
+
+.activity-metric-tile {
+  background: color-mix(in srgb, var(--orbflow-surface) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--orbflow-border) 84%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.activity-list-card {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.02),
+    0 6px 16px rgba(0, 0, 0, 0.07);
+}
+
+.activity-list-card:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.03),
+    0 10px 22px rgba(0, 0, 0, 0.09);
+}
+
+.activity-card--selected {
+  background:
+    linear-gradient(180deg, rgba(124, 92, 252, 0.10) 0%, color-mix(in srgb, var(--orbflow-bg) 96%, transparent) 100%);
+  box-shadow:
+    0 16px 36px rgba(124, 92, 252, 0.10),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+/* Sticky date group headers in sidebar */
+.activity-date-group {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  backdrop-filter: blur(14px);
+  background: color-mix(in srgb, var(--orbflow-bg) 84%, transparent);
+  border: 1px solid color-mix(in srgb, var(--orbflow-border) 70%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+[data-theme="light"] .activity-date-group {
+  background: color-mix(in srgb, var(--orbflow-bg) 90%, transparent);
+}
+
+[data-theme="light"] .activity-shell {
+  background:
+    radial-gradient(circle at top left, rgba(124, 92, 252, 0.05), transparent 22%),
+    radial-gradient(circle at top right, rgba(34, 211, 238, 0.04), transparent 18%),
+    var(--orbflow-bg);
+}
+
+[data-theme="light"] .activity-sidebar-panel {
+  background:
+    linear-gradient(180deg, rgba(124, 92, 252, 0.04), transparent 18%),
+    color-mix(in srgb, white 66%, var(--orbflow-bg) 34%);
+}
+
+[data-theme="light"] .activity-sidebar-panel::before {
+  opacity: 0.65;
+}
+
+[data-theme="light"] .activity-sidebar-hero,
+[data-theme="light"] .activity-surface {
+  background: color-mix(in srgb, white 78%, var(--orbflow-bg) 22%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    0 14px 28px var(--orbflow-shadow-colored, rgba(88, 100, 122, 0.08));
+}
+
+[data-theme="light"] .activity-detail-shell {
+  background:
+    radial-gradient(circle at top right, rgba(124, 92, 252, 0.04), transparent 18%),
+    linear-gradient(180deg, color-mix(in srgb, white 60%, var(--orbflow-bg) 40%), var(--orbflow-bg));
+}
+
+[data-theme="light"] .activity-metric-tile {
+  background: color-mix(in srgb, white 86%, var(--orbflow-bg) 14%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+[data-theme="light"] .activity-list-card {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 10px 18px var(--orbflow-shadow-colored, rgba(88, 100, 122, 0.07));
+}
+
+[data-theme="light"] .activity-card--selected {
+  background:
+    linear-gradient(180deg, rgba(124, 92, 252, 0.08) 0%, color-mix(in srgb, var(--orbflow-bg) 96%, transparent) 100%);
+  box-shadow:
+    0 16px 36px rgba(124, 92, 252, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+/* -- Reduced Motion --------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  [class*="animate-"] {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+
+  .react-flow__edge-path {
+    transition: none !important;
+  }
+}

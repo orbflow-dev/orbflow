@@ -1,0 +1,33 @@
+[package]
+name = "orbflow-plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "External plugin loader via subprocess and gRPC protocols"
+
+[dependencies]
+orbflow-core = { workspace = true }
+orbflow-registry = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
+prost = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+default = []
+# Enable gRPC server stubs for integration tests.
+test-server = []
+
+[dev-dependencies]
+tokio-stream = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }
+tonic-prost-build = { workspace = true }
+protox = { workspace = true }

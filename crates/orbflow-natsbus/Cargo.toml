@@ -1,0 +1,18 @@
+[package]
+name = "orbflow-natsbus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "NATS JetStream Bus implementation"
+
+[dependencies]
+orbflow-core = { workspace = true }
+async-nats = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+bytes = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }

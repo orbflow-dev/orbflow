@@ -1,0 +1,24 @@
+server:
+  host: "127.0.0.1"
+  port: 8080
+  cors_origins:
+    - "*"
+
+worker:
+  pool: "default"
+  concurrency: 2
+
+database:
+  # sslmode=disable is safe for localhost only. Use sslmode=require in production.
+  dsn: "postgres://orbflow:orbflow@localhost:5432/orbflow_dev?sslmode=disable"
+
+nats:
+  url: "nats://127.0.0.1:4222"
+  embedded: false
+
+credentials:
+  encryption_key: "${CREDENTIAL_ENCRYPTION_KEY}"
+
+log:
+  level: "info"
+  format: "console"

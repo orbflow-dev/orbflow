@@ -1,0 +1,28 @@
+[package]
+name = "orbflow-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Core domain types, traits, and utilities for the Orbflow workflow engine"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+aes-gcm = { workspace = true }
+sha2 = { workspace = true }
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
+regex = { workspace = true }
+tracing = { workspace = true }
+opentelemetry = { workspace = true }
+tokio = { workspace = true }
+subtle = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -1,0 +1,19 @@
+[package]
+name = "orbflow-postgres"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "PostgreSQL Store implementation with event sourcing"
+
+[dependencies]
+orbflow-core = { workspace = true }
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }

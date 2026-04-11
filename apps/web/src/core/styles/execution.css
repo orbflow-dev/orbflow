@@ -1,0 +1,313 @@
+/* =======================================================
+   Execution Status Animations
+   ======================================================= */
+
+/* Running: pulsing glow via opacity (GPU-compositable, no box-shadow repaint) */
+@keyframes exec-pulse {
+  0%, 100% { opacity: 0.6; }
+  50%      { opacity: 1; }
+}
+
+/* Node-level pulse ring -- scale + fade (GPU-compositable) */
+@keyframes exec-node-pulse {
+  0%   { transform: scale(1); opacity: 0.7; }
+  70%  { transform: scale(1.15); opacity: 0; }
+  100% { transform: scale(1.15); opacity: 0; }
+}
+
+/* Completed: brief flash then settle */
+@keyframes exec-success-flash {
+  0%   { box-shadow: 0 0 0px 0px var(--exec-glow-color); }
+  30%  { box-shadow: 0 0 10px 3px var(--exec-glow-color); }
+  100% { box-shadow: 0 0 4px 1px var(--exec-glow-color); }
+}
+
+/* Failed: shake + steady glow */
+@keyframes exec-shake {
+  0%, 100% { transform: translateX(0); }
+  20%      { transform: translateX(-3px); }
+  40%      { transform: translateX(3px); }
+  60%      { transform: translateX(-2px); }
+  80%      { transform: translateX(2px); }
+}
+
+/* Queued: breathing opacity */
+@keyframes exec-breathe {
+  0%, 100% { opacity: 0.6; }
+  50%      { opacity: 1; }
+}
+
+/* =======================================================
+   Status Classes (applied to inner wrapper, NOT the RF node)
+   ======================================================= */
+
+.exec-status-pending {
+  --exec-glow-color: rgba(100, 116, 139, 0.15);
+  border-color: #64748B;
+}
+
+.exec-status-queued {
+  --exec-glow-color: rgba(139, 143, 163, 0.15);
+  border-color: #8B8FA3;
+  animation: exec-breathe 2s ease-in-out infinite;
+  will-change: opacity;
+}
+
+.exec-status-running {
+  --exec-glow-color: rgba(74, 154, 175, 0.25);
+  border-color: #4A9AAF;
+  box-shadow: 0 0 8px 2px var(--exec-glow-color);
+  animation: exec-pulse 1.5s ease-in-out infinite;
+  will-change: opacity;
+}
+
+/* Outer pulse ring overlay for running nodes — GPU-compositable transform + opacity */
+.exec-status-running::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: inherit;
+  border: 2px solid rgba(74, 154, 175, 0.35);
+  animation: exec-node-pulse 2s ease-out infinite;
+  will-change: transform, opacity;
+  pointer-events: none;
+}
+
+.exec-status-completed {
+  --exec-glow-color: rgba(16, 185, 129, 0.15);
+  border-color: #10B981;
+  box-shadow: 0 0 4px 1px var(--exec-glow-color);
+}
+
+/* Applied once on transition to completed, then removed */
+.exec-status-completed--flash {
+  animation: exec-success-flash 0.6s ease-out forwards;
+}
+
+.exec-status-failed {
+  --exec-glow-color: rgba(217, 69, 79, 0.2);
+  border-color: #D9454F;
+  box-shadow: 0 0 6px 2px var(--exec-glow-color);
+}
+
+/* Applied once on transition to failed, then removed */
+.exec-status-failed--shake .exec-inner {
+  animation: exec-shake 0.4s ease-in-out;
+}
+
+.exec-status-skipped {
+  opacity: 0.4;
+  filter: grayscale(0.5);
+  border-color: #94A3B8;
+}
+
+.exec-status-cancelled {
+  --exec-glow-color: rgba(196, 144, 48, 0.12);
+  border-color: var(--orbflow-exec-cancelled, #C49030);
+  opacity: 0.7;
+}
+
+/* =======================================================
+   Status Badge (small pill on node corner)
+   ======================================================= */
+
+.exec-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: white;
+  z-index: 10;
+  border: 2px solid var(--orbflow-surface, #141417);
+}
+
+.exec-badge--completed { background: var(--orbflow-exec-completed, #10B981); }
+.exec-badge--failed    { background: var(--orbflow-exec-failed, #D9454F); }
+.exec-badge--running   { background: var(--orbflow-exec-active, #4A9AAF); }
+.exec-badge--skipped   { background: #94A3B8; }
+.exec-badge--cancelled { background: var(--orbflow-exec-cancelled, #C49030); }
+
+/* =======================================================
+   Duration Label (below node)
+   ======================================================= */
+
+.exec-duration {
+  position: absolute;
+  bottom: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  color: var(--orbflow-text-tertiary, rgba(255,255,255,0.5));
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* =======================================================
+   Error Tooltip (shown on hover for failed nodes)
+   ======================================================= */
+
+.exec-error-tooltip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #2D1215;
+  border: 1px solid #D9454F;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: #F8D7DA;
+  max-width: 240px;
+  white-space: pre-wrap;
+  z-index: 20;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.exec-status-failed:hover .exec-error-tooltip {
+  opacity: 1;
+}
+
+/* =======================================================
+   Edge Flow Animation (running state)
+   ======================================================= */
+
+@keyframes exec-edge-dash {
+  to { stroke-dashoffset: -20; }
+}
+
+.exec-edge-flow {
+  stroke-dasharray: 6 4;
+  animation: exec-edge-dash 0.8s linear infinite;
+}
+
+/* =======================================================
+   Inner box border inherits status color
+   ======================================================= */
+
+.exec-status-running > div:first-child,
+.exec-status-completed > div:first-child,
+.exec-status-failed > div:first-child,
+.exec-status-cancelled > div:first-child,
+.exec-status-queued > div:first-child {
+  border-color: inherit !important;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+/* =======================================================
+   Light theme overrides
+   ======================================================= */
+
+[data-theme="light"] .exec-badge {
+  border-color: var(--orbflow-surface, #FFFFFF);
+}
+
+[data-theme="light"] .exec-error-tooltip {
+  background: #FEF2F2;
+  border-color: #DC2626;
+  color: #991B1B;
+}
+
+[data-theme="light"] .exec-duration {
+  color: rgba(0, 0, 0, 0.4);
+}
+
+/* =======================================================
+   Execution status text colors (dark/light adaptive)
+   ======================================================= */
+
+:root {
+  --exec-text-completed: #86CEAF;
+  --exec-text-failed: #D88B92;
+  --exec-text-running: #85C5D4;
+  --exec-text-pending: #8896A7;
+  --exec-text-cancelled: #C9A95F;
+}
+
+[data-theme="light"] {
+  --exec-text-completed: #047857;
+  --exec-text-failed: #B91C1C;
+  --exec-text-running: #0E7490;
+  --exec-text-pending: #475569;
+  --exec-text-cancelled: #92400E;
+}
+
+/* =======================================================
+   Light theme -- Status Classes
+   ======================================================= */
+
+[data-theme="light"] .exec-status-pending {
+  --exec-glow-color: rgba(100, 116, 139, 0.12);
+  border-color: #94A3B8;
+}
+
+[data-theme="light"] .exec-status-queued {
+  --exec-glow-color: rgba(139, 143, 163, 0.12);
+  border-color: #A0A4B8;
+}
+
+[data-theme="light"] .exec-status-running {
+  --exec-glow-color: rgba(74, 154, 175, 0.3);
+  border-color: #3B8A9E;
+}
+
+[data-theme="light"] .exec-status-running::after {
+  --exec-glow-color: rgba(74, 154, 175, 0.2);
+}
+
+[data-theme="light"] .exec-status-completed {
+  --exec-glow-color: rgba(16, 185, 129, 0.25);
+  border-color: #059669;
+  box-shadow: 0 0 6px 2px var(--exec-glow-color);
+}
+
+[data-theme="light"] .exec-status-failed {
+  --exec-glow-color: rgba(217, 69, 79, 0.25);
+  border-color: #DC2626;
+  box-shadow: 0 0 6px 2px var(--exec-glow-color);
+}
+
+[data-theme="light"] .exec-status-skipped {
+  opacity: 0.5;
+  filter: grayscale(0.4);
+  border-color: #CBD5E1;
+}
+
+[data-theme="light"] .exec-status-cancelled {
+  --exec-glow-color: rgba(196, 144, 48, 0.12);
+  border-color: var(--orbflow-exec-cancelled, #B45309);
+  opacity: 0.75;
+}
+
+/* Waiting Approval: steady amber glow with pause indicator */
+.exec-status-waiting_approval {
+  --exec-glow-color: rgba(232, 163, 23, 0.35);
+  border-color: #E8A317;
+  box-shadow: 0 0 8px 2px var(--exec-glow-color);
+  animation: exec-approval-pulse 2s ease-in-out infinite;
+  will-change: opacity;
+}
+
+@keyframes exec-approval-pulse {
+  0%, 100% { opacity: 0.7; }
+  50%      { opacity: 1; }
+}
+
+.exec-badge--waiting-approval {
+  background: rgba(232, 163, 23, 0.15);
+  color: #E8A317;
+  border: 1px solid rgba(232, 163, 23, 0.3);
+}
+
+[data-theme="light"] .exec-status-waiting_approval {
+  --exec-glow-color: rgba(232, 163, 23, 0.2);
+  border-color: #D97706;
+  box-shadow: 0 0 6px 2px var(--exec-glow-color);
+}

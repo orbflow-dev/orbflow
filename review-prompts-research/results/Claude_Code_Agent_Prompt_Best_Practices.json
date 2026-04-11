@@ -1,0 +1,117 @@
+{
+  "key_principles": [
+    "Use <investigate_before_answering> tags to force agents to read files before answering: 'Never speculate about code you have not opened. If the user references a specific file, you MUST read the file before answering.' This is Anthropic's own recommended anti-hallucination pattern.",
+    "Restrict subagent tools via the 'tools' frontmatter field to create hard constraints. A reviewer with only Read, Grep, Glob physically cannot write files -- this is structural, not advisory. The Explore built-in agent uses '=== CRITICAL: READ-ONLY MODE ===' with an explicit deny list.",
+    "Scope reviews to changed files using git diff. The official code-review plugin runs 'gh pr diff' and instructs agents: 'Focus only on the diff itself without reading extra context. Flag only significant bugs; ignore nitpicks and likely false positives.'",
+    "Launch parallel specialized subagents rather than one monolithic reviewer. The official code-review plugin launches 4 parallel agents: 2 for CLAUDE.md compliance, 1 for bug scanning (diff-only), 1 for context-based analysis (git blame/history).",
+    "Apply confidence scoring to filter false positives. Each issue gets a 0-100 confidence score; only issues >= 80 are reported. This dramatically reduces noise in automated reviews.",
+    "Use a validation pass: after initial review agents find issues, launch additional parallel subagents to validate each issue independently. Only issues confirmed with high confidence survive.",
+    "Keep CLAUDE.md concise and actionable -- if Claude already does something correctly without the instruction, delete it. Long CLAUDE.md files cause instruction loss. Convert enforceable rules into hooks instead.",
+    "Pass all necessary context in the subagent prompt string directly. The only channel from parent to subagent is the Agent tool's prompt -- file paths, error messages, decisions, and constraints must be included explicitly.",
+    "Use hooks (PreToolUse/PostToolUse) for deterministic enforcement rather than relying on prompt instructions. Hooks guarantee behavior (e.g., auto-format after edits, block writes to protected files) where prompts only suggest it.",
+    "Separate concerns with instruction hierarchy: CLAUDE.md for always-on project context, skills for on-demand domain knowledge, subagents for isolated context windows, and hooks for deterministic guardrails."
+  ],
+  "concrete_examples": [
+    {
+      "title": "Anti-hallucination wrapper for code analysis",
+      "before": "Review the authentication module for security issues.",
+      "after": "<investigate_before_answering>\nNever speculate about code you have not opened. If the user references a specific file, you MUST read the file before answering. Make sure to investigate and read relevant files BEFORE answering questions about the codebase. Never make any claims about code before investigating unless you are certain of the correct answer.\n</investigate_before_answering>\n\nReview the authentication module in crates/orbflow-httpapi/src/middleware.rs for security issues. Read the file first, then analyze.",
+      "explanation": "The XML-tagged instruction block forces the agent to use Read/Grep tools before making claims. Specifying the exact file path prevents hallucinated paths."
+    },
+    {
+      "title": "Read-only subagent with tool restrictions",
+      "before": "---\nname: code-reviewer\ndescription: Reviews code changes\n---\nYou are a code reviewer. Review the changes and suggest fixes.",
+      "after": "---\nname: code-reviewer\ndescription: Reviews code for quality, security, and best practices. Use proactively after code changes.\ntools: Read, Grep, Glob\nmodel: sonnet\n---\n\nYou are an expert code reviewer. You have READ-ONLY access.\n\n=== CRITICAL: NO FILE MODIFICATIONS ===\nYou are STRICTLY PROHIBITED from creating, modifying, or deleting files.\n\nWorkflow:\n1. Run `git diff --name-only HEAD~1` to identify changed files\n2. Read each changed file using the Read tool\n3. Search for related patterns using Grep\n4. Analyze and report findings\n\nFor each issue provide:\n- Severity: CRITICAL / HIGH / MEDIUM / LOW\n- File path and line range\n- Description with code snippet\n- Suggested fix (as text, do not edit)\n- Confidence score (0-100, only report >= 80)",
+      "explanation": "The 'tools' field structurally prevents writes. The explicit workflow forces file reads before analysis. Confidence scoring filters noise."
+    },
+    {
+      "title": "Scoping review to changed files only",
+      "before": "Review the codebase for issues.",
+      "after": "Review ONLY the files changed in this PR. Use `gh pr diff $PR_NUMBER` to get the diff.\n\nDo NOT read files outside the diff unless needed to understand an import or type reference.\nDo NOT flag issues in unchanged code.\nDo NOT flag issues that you cannot validate without looking at context outside of the git diff.\n\nFor each issue, cite the exact file path and line number from the diff.",
+      "explanation": "Explicit scoping prevents the agent from reading hundreds of files and filling context. Requiring exact citations prevents hallucinated references."
+    },
+    {
+      "title": "Parallel agent orchestration for code review",
+      "before": "Review this PR thoroughly.",
+      "after": "Follow these steps precisely:\n\n1. Launch a haiku agent to check if the PR is closed, draft, or already reviewed. If so, stop.\n\n2. Launch a haiku agent to list file paths of all relevant CLAUDE.md files in directories containing modified files.\n\n3. Launch a sonnet agent to summarize the PR changes.\n\n4. Launch 4 agents in parallel:\n   - Agents 1+2 (sonnet): Audit CLAUDE.md compliance\n   - Agent 3 (opus): Scan for bugs in diff only, no extra context\n   - Agent 4 (opus): Analyze with git blame history context\n\n5. For each issue from step 4, launch validation subagents in parallel. Each validator reviews the issue independently and assigns confidence 0-100.\n\n6. Filter to issues with confidence >= 80. Output remaining issues.",
+      "explanation": "This mirrors Anthropic's official code-review plugin pattern. Parallel agents preserve context, validation passes filter false positives, and model selection optimizes cost."
+    },
+    {
+      "title": "Hook-based enforcement vs prompt-based suggestion",
+      "before": "Always run prettier after editing files (instruction in CLAUDE.md)",
+      "after": "{\n  \"hooks\": {\n    \"PostToolUse\": [\n      {\n        \"matcher\": \"Edit|Write\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"npx prettier --write \\\"$TOOL_INPUT_FILE_PATH\\\"\"\n          }\n        ]\n      }\n    ]\n  }\n}",
+      "explanation": "Hooks provide deterministic guarantees. The CLAUDE.md instruction can be forgotten after context compaction; the hook always fires. Use hooks for rules, prompts for judgment."
+    }
+  ],
+  "anti_patterns": [
+    {
+      "pattern": "Vague scope: 'Review the codebase' without specifying files or diff",
+      "why_it_fails": "The agent reads hundreds of files, fills the context window, and produces unfocused results. Earlier instructions get lost after compaction. The agent may hallucinate issues in files it never actually read.",
+      "alternative": "Always scope to changed files: 'Review only files in `git diff --name-only main...HEAD`'. Pass explicit file paths in the prompt when possible."
+    },
+    {
+      "pattern": "Relying on the agent to 'know' file paths or function signatures from training data",
+      "why_it_fails": "Claude may hallucinate file paths, function names, or API signatures that look plausible but do not exist in the actual codebase. This is especially common in subagents which have no prior conversation context.",
+      "alternative": "Always instruct the agent to use Glob/Grep/Read to discover and verify paths before referencing them. Use the <investigate_before_answering> pattern. Pass known paths explicitly in the prompt string."
+    },
+    {
+      "pattern": "Putting all enforcement rules in CLAUDE.md instead of using hooks",
+      "why_it_fails": "CLAUDE.md is loaded once and can be forgotten after context compaction. Rules like 'always run linter' or 'never edit config files' are advisory, not enforced. The agent may comply 90% of the time but fail on the critical 10%.",
+      "alternative": "Use PreToolUse hooks to block forbidden operations (exit code 2) and PostToolUse hooks for mandatory post-actions (formatting, linting). Reserve CLAUDE.md for context that requires judgment."
+    },
+    {
+      "pattern": "Single monolithic review agent trying to check everything",
+      "why_it_fails": "One agent checking security, style, bugs, tests, and CLAUDE.md compliance in a single pass produces shallow results. The context fills up with code reads, leaving little room for analysis. Different concerns benefit from different models (opus for bugs, sonnet for compliance).",
+      "alternative": "Launch parallel specialized subagents, each with a focused mandate and appropriate model. Merge and deduplicate results afterward."
+    },
+    {
+      "pattern": "Not validating agent-found issues before reporting",
+      "why_it_fails": "Initial review passes produce many false positives, especially for style and 'potential bug' categories. Reporting all of them erodes trust in the review system and creates alert fatigue.",
+      "alternative": "Add a validation pass where independent subagents review each issue. Apply confidence scoring (0-100) and only surface issues >= 80 confidence. The official Claude Code review plugin uses this exact pattern."
+    },
+    {
+      "pattern": "Overloading CLAUDE.md with instructions the model already follows",
+      "why_it_fails": "Long CLAUDE.md files cause important rules to get lost. Every line competes for attention in the context window. If Claude already follows a practice by default, the instruction adds noise without value.",
+      "alternative": "Ruthlessly prune CLAUDE.md. Test whether Claude follows a rule without the instruction. If yes, remove it. Convert deterministic rules to hooks."
+    }
+  ],
+  "implementation_recommendations": [
+    "Create separate review subagents for frontend (apps/web, packages/orbflow-core) and backend (crates/*) with domain-specific prompts. The frontend reviewer should check React patterns, Zustand store immutability, and CSS consistency. The backend reviewer should check Rust error handling, port/adapter boundaries, and NodeExecutor conventions.",
+    "Use git diff to scope reviews: run `git diff --name-only main...HEAD` first, then partition files into frontend (.tsx, .ts in apps/ or packages/) and backend (.rs in crates/) groups. Pass only the relevant file list to each specialized subagent.",
+    "Implement the <investigate_before_answering> pattern in all review subagents to prevent hallucination of orbflow-specific types like OrbflowError variants, port trait methods, or NodeSchema field definitions. Force agents to Read the actual source before claiming something exists.",
+    "Apply the official code-review plugin's confidence scoring pattern: each issue gets a 0-100 score, only issues >= 80 are reported. This is critical for orbflow where false positives in complex DAG/CEL code would erode trust.",
+    "Create a PostToolUse hook that runs `cargo clippy` after Rust file edits and `pnpm lint` after TypeScript file edits to catch issues deterministically rather than relying on prompt instructions.",
+    "Pass orbflow architectural constraints explicitly in subagent prompts: 'Dependencies point inward -- only orbflow-core is imported across crate boundaries. Flag any import that violates this rule.' Do not assume the agent will infer this from CLAUDE.md.",
+    "Use haiku-tier agents for triage tasks (file listing, draft detection, CLAUDE.md gathering) and opus-tier agents for deep bug analysis. This optimizes cost while maintaining quality on the tasks that matter most."
+  ],
+  "prompt_template_fragments": [
+    "## Anti-Hallucination Guard\n<investigate_before_answering>\nNever speculate about code you have not opened. You MUST read a file using the Read tool before making any claims about its contents, structure, or behavior. Never hallucinate file paths -- use Glob to discover files if you are unsure of their location. Never hallucinate function signatures -- use Grep to find the actual definition.\n</investigate_before_answering>",
+    "## Scope Restriction\nYou are reviewing ONLY the files changed in this diff. Run `git diff --name-only $BASE_BRANCH...HEAD` to get the list of changed files.\n- Do NOT read files outside this list unless resolving an import or type reference\n- Do NOT flag issues in unchanged code\n- Do NOT flag issues you cannot validate from the diff context alone\n- For each issue, cite the exact file path and line number",
+    "## Issue Reporting Format\nFor each issue found, report:\n- **Severity**: CRITICAL | HIGH | MEDIUM | LOW\n- **Category**: bug | security | style | architecture | performance\n- **File**: exact file path\n- **Lines**: line range (e.g., 42-47)\n- **Description**: what is wrong and why\n- **Evidence**: quote the relevant code\n- **Suggestion**: how to fix (as text, do not modify the file)\n- **Confidence**: 0-100 (only report issues with confidence >= 80)",
+    "## Orbflow Architecture Rules (pass to backend review agents)\nThis codebase follows Ports & Adapters architecture:\n- orbflow-core defines all domain types and port traits\n- Every other crate implements exactly one adapter\n- Dependencies point INWARD: only orbflow-core may be imported across crate boundaries\n- OrbflowError enum in orbflow-core::error is the single error type\n- All builtin executors implement NodeExecutor and NodeSchemaProvider traits\n- Wire types use snake_case JSON field names matching frontend api.ts\n\nFlag any violation of these rules as CRITICAL.",
+    "## Subagent Frontmatter Template (read-only reviewer)\n---\nname: orbflow-reviewer\ndescription: Reviews orbflow code changes for bugs, architecture violations, and best practices. Use after code modifications.\ntools: Read, Grep, Glob, Bash(git diff:*), Bash(git log:*), Bash(git blame:*)\nmodel: sonnet\n---"
+  ],
+  "sources": [
+    "https://code.claude.com/docs/en/sub-agents - Official Claude Code subagents documentation with frontmatter fields, tool restrictions, and example configurations",
+    "https://code.claude.com/docs/en/best-practices - Official Claude Code best practices including CLAUDE.md writing guidelines",
+    "https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices - Anthropic's prompting best practices with <investigate_before_answering> anti-hallucination pattern",
+    "https://github.com/anthropics/claude-code/blob/main/plugins/code-review/commands/code-review.md - Official code-review plugin with parallel agent orchestration, confidence scoring, and validation passes",
+    "https://github.com/Piebald-AI/claude-code-system-prompts - Reverse-engineered Claude Code system prompts including Explore agent's read-only enforcement pattern",
+    "https://code.claude.com/docs/en/hooks-guide - Official hooks documentation for PreToolUse/PostToolUse deterministic enforcement",
+    "https://alexop.dev/posts/claude-code-customization-guide-claudemd-skills-subagents/ - Comprehensive guide comparing CLAUDE.md, slash commands, skills, and subagents with trade-off analysis",
+    "https://hamy.xyz/blog/2026-02_code-reviews-claude-subagents - Real-world implementation of 9 parallel code review subagents",
+    "https://towardsdatascience.com/claude-skills-and-subagents-escaping-the-prompt-engineering-hamster-wheel/ - Analysis of skills and subagents for reliable agent behavior",
+    "https://www.builder.io/blog/claude-code - Practical tips including CLAUDE.md pruning and scoped investigations"
+  ],
+  "relevance_to_orbflow": "Orbflow's architecture -- a Rust backend with Ports & Adapters pattern plus a TypeScript/React frontend monorepo -- creates a natural split for review agents. Backend reviews must enforce orbflow-specific invariants: inward-pointing dependencies (only orbflow-core crosses crate boundaries), OrbflowError as the single error type, NodeExecutor/NodeSchemaProvider trait compliance, snake_case wire format consistency with the frontend's api.ts types, and CEL expression safety. Frontend reviews must check Zustand store immutability patterns, React component conventions in the core/ vs components/ layering, and theme consistency.\n\nThe parallel subagent pattern from Anthropic's official code-review plugin maps perfectly to orbflow's dual-stack: launch separate frontend and backend reviewer subagents in parallel, each with domain-specific prompts that include orbflow's architectural rules. The confidence scoring pattern (>= 80 threshold) is especially important for orbflow because the DAG engine, CEL evaluator, and event sourcing code involve complex logic where false positive 'bugs' would create noise. Using hooks for deterministic enforcement (cargo clippy after .rs edits, pnpm lint after .ts edits) complements prompt-based review by catching mechanical issues that do not require judgment.",
+  "automation_hooks": [
+    "PreToolUse hook on Edit|Write matcher to block modifications to protected files (e.g., migration SQL files, proto definitions, Cargo.toml workspace config) during automated review -- exit code 2 with stderr message explaining why the edit is blocked.",
+    "PostToolUse hook on Edit|Write matcher to auto-run `cargo clippy --workspace -- -D warnings` after any .rs file edit and `pnpm lint` after any .ts/.tsx file edit, ensuring mechanical quality without relying on the agent remembering to lint.",
+    "PreToolUse hook on Bash matcher to block destructive git operations (push --force, reset --hard, clean -f) during review subagent execution, preventing accidental repository damage.",
+    "Use `git diff --name-only main...HEAD` in the review skill/command to dynamically generate the file list, then partition into frontend/backend groups and pass each group to the appropriate specialized subagent.",
+    "PostToolUse hook with 'Notification' event type to send a desktop notification when the review is complete, allowing developers to context-switch while the multi-agent review runs.",
+    "Implement a slash command `/review` that orchestrates the full review pipeline: (1) haiku agent for triage, (2) parallel sonnet agents for compliance, (3) parallel opus agents for bug detection, (4) parallel validation agents for confidence scoring, (5) formatted output with only high-confidence issues.",
+    "Use the Agent SDK's --agents flag to pass review subagent definitions as JSON in CI/CD pipelines, enabling headless code review on every PR without requiring .claude/agents/ files in the repository."
+  ],
+  "uncertain": []
+}

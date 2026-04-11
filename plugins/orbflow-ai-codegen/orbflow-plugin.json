@@ -1,0 +1,107 @@
+{
+  "author": "Orbflow",
+  "category": "ai",
+  "color": "#EC4899",
+  "description": "Generate code in any language using an OpenAI-compatible LLM",
+  "icon": "terminal",
+  "inputs": [
+    {
+      "description": "Description of the code to generate",
+      "key": "prompt",
+      "label": "Prompt",
+      "required": true,
+      "type": "string"
+    },
+    {
+      "default": "python",
+      "description": "Target programming language",
+      "key": "language",
+      "label": "Language",
+      "type": "string"
+    },
+    {
+      "description": "Additional context (existing code, requirements)",
+      "key": "context",
+      "label": "Context",
+      "type": "string"
+    }
+  ],
+  "language": "python",
+  "license": "Apache-2.0",
+  "name": "orbflow-ai-codegen",
+  "node_types": [
+    "plugin:ai-codegen"
+  ],
+  "orbflow_version": ">=0.1.0",
+  "outputs": [
+    {
+      "description": "Generated code",
+      "key": "code",
+      "label": "Code",
+      "type": "string"
+    },
+    {
+      "key": "explanation",
+      "label": "Explanation",
+      "type": "string"
+    },
+    {
+      "key": "language",
+      "label": "Language",
+      "type": "string"
+    },
+    {
+      "description": "Model used",
+      "key": "model",
+      "label": "Model",
+      "type": "string"
+    },
+    {
+      "description": "Token usage stats",
+      "key": "usage",
+      "label": "Usage",
+      "type": "object"
+    }
+  ],
+  "parameters": [
+    {
+      "default": "gpt-4o-mini",
+      "description": "Model name",
+      "key": "model",
+      "label": "Model",
+      "type": "string"
+    },
+    {
+      "default": 2048,
+      "key": "max_tokens",
+      "label": "Max Tokens",
+      "type": "number"
+    },
+    {
+      "default": 0.2,
+      "key": "temperature",
+      "label": "Temperature",
+      "type": "number"
+    },
+    {
+      "credential_type": "openai,anthropic,google_ai",
+      "description": "API key credential for the LLM provider",
+      "key": "credential_id",
+      "label": "API Credential",
+      "required": true,
+      "type": "credential"
+    }
+  ],
+  "protocol": {
+    "Grpc": {
+      "default_port": 50051
+    }
+  },
+  "tags": [
+    "ai",
+    "code",
+    "generation",
+    "llm"
+  ],
+  "version": "0.2.0"
+}

@@ -1,0 +1,125 @@
+{
+  "key_principles": [
+    "Use the PCEI framework (Persona, Context, Examples, Instructions) for every review prompt -- assign a specific frontend expert persona, provide tech stack context (React 19, Next.js 15, TypeScript strict, Zustand), show example findings, and give explicit instructions on output format and severity levels.",
+    "Scope prompts narrowly by review domain rather than using one mega-prompt: separate prompts for component architecture, hooks correctness, render performance, type safety, accessibility, security, and bundle size produce more reliable and thorough findings than a single generic 'review this code' prompt.",
+    "Always include project-specific architectural constraints in the prompt context: state management library (Zustand), styling approach (Tailwind/CSS modules), component boundaries (server vs client components), and naming conventions. Without this, the LLM invents conventions.",
+    "Require structured output with severity levels (CRITICAL/HIGH/MEDIUM/LOW), file locations, and concrete fix suggestions. Unstructured prose reviews are harder to action and track.",
+    "Focus Zustand review prompts on selector specificity: flag components that subscribe to the entire store instead of specific slices, missing useShallow for multi-property selectors, and object creation inside selectors that defeats reference equality.",
+    "Enforce 'use client' boundary minimization in Next.js App Router reviews: check that interactive components are small client islands imported into server components, not large subtrees unnecessarily marked as client components that bloat the JS bundle.",
+    "Mandate hooks correctness checks: dependency arrays must include all referenced values, hooks must never appear inside conditionals or loops, custom hooks must follow the use* naming convention, and useEffect cleanup functions must be present for subscriptions and timers.",
+    "Include frontend-specific security checks as a dedicated prompt section: flag all dangerouslySetInnerHTML usage without DOMPurify sanitization, href='javascript:' patterns, eval() calls, unsanitized URL parameters rendered in the DOM, and postMessage without origin validation.",
+    "Provide few-shot examples of the exact issue format you want the reviewer to produce -- this is the single most effective technique for improving LLM review output quality. Show 3-5 examples of real findings with the severity, location, explanation, and fix.",
+    "Review prompts should explicitly list what NOT to flag (e.g., minor style preferences already handled by ESLint/Prettier) to reduce noise and focus the LLM on substantive issues that automated tooling cannot catch."
+  ],
+  "concrete_examples": [
+    {
+      "name": "Generic vs Specific Prompt Comparison",
+      "before": "Review this React code for issues.",
+      "after": "You are a senior React performance engineer reviewing a Next.js 15 App Router application using Zustand for state management and Tailwind CSS for styling. Analyze the following diff for: (1) unnecessary re-renders caused by non-memoized callbacks or object literals passed as props, (2) Zustand selectors that subscribe to more state than needed, (3) missing React.memo on pure presentational components receiving complex props, (4) useEffect hooks with incorrect or missing dependency arrays. For each issue found, provide: severity (CRITICAL/HIGH/MEDIUM/LOW), file and line, explanation, and a concrete code fix.",
+      "why": "The specific prompt assigns a persona, provides stack context, enumerates exact check categories, and defines output format -- producing focused, actionable findings instead of vague suggestions."
+    },
+    {
+      "name": "Zustand Selector Review Prompt",
+      "prompt": "Review all Zustand useStore() calls in the changed files. Flag any component that: (a) destructures the entire store state instead of selecting specific fields, (b) creates new object references inside the selector function without useShallow, (c) selects derived data that should be computed via a separate derived selector or useMemo. For each finding, show the current code and the optimized selector pattern.",
+      "why": "Zustand-specific prompts catch the most common performance pitfall: subscribing to the entire store causes every state change to re-render the component."
+    },
+    {
+      "name": "Next.js Client/Server Boundary Review",
+      "prompt": "Audit all files with 'use client' directives. For each client component, check: (1) Could this component be a server component if interactivity were extracted to a smaller child? (2) Does it import heavy libraries (date-fns, lodash, chart libraries) that could stay server-side? (3) Are there data-fetching calls that should use server actions or RSC instead of client-side fetch? List each file with its client-side JS cost assessment.",
+      "why": "Prevents bundle bloat by ensuring the 'use client' boundary is drawn as narrowly as possible."
+    },
+    {
+      "name": "Security-Focused Frontend Review Prompt",
+      "prompt": "You are a frontend security specialist. Scan these React components for: (1) Any use of dangerouslySetInnerHTML -- if found, verify DOMPurify.sanitize() wraps the input. (2) Dynamic href or src attributes constructed from user input or URL params without validation. (3) Any eval(), new Function(), or innerHTML assignments. (4) postMessage/addEventListener('message') handlers without origin checks. (5) Sensitive data (tokens, keys) stored in localStorage instead of httpOnly cookies. Rate each finding as CRITICAL (exploitable XSS/injection) or HIGH (potential vector).",
+      "why": "React auto-escapes JSX text but has well-known escape hatches. A targeted prompt catches these specific vectors rather than generic 'check for security issues'."
+    },
+    {
+      "name": "Accessibility Review Prompt Fragment",
+      "prompt": "Review the JSX output for WCAG 2.1 AA compliance: (1) All interactive elements (buttons, links, inputs) must have accessible names via visible text, aria-label, or aria-labelledby. (2) Images must have meaningful alt text (not 'image' or empty string on informational images). (3) Custom components acting as buttons must use <button> or role='button' with keyboard handlers (onKeyDown for Enter/Space). (4) Color contrast: flag any hardcoded color values that may not meet 4.5:1 ratio. (5) Focus management: modals and drawers must trap focus and restore it on close.",
+      "why": "Generic 'check accessibility' prompts miss most issues. Enumerating specific WCAG criteria produces concrete, verifiable findings."
+    }
+  ],
+  "anti_patterns": [
+    {
+      "pattern": "The 'review everything' mega-prompt",
+      "why_it_fails": "A single prompt asking the LLM to check architecture, performance, security, accessibility, types, and styling simultaneously produces shallow coverage of each area. The model distributes attention across too many concerns and misses deep issues in each category.",
+      "instead": "Use separate, focused review passes: one for architecture/component structure, one for hooks/render performance, one for type safety, one for security, one for accessibility. Chain them or run in parallel with specialized agent sub-tasks."
+    },
+    {
+      "pattern": "No project context in the prompt",
+      "why_it_fails": "Without knowing the tech stack, state management approach, and project conventions, the LLM defaults to generic React advice, suggests Redux patterns for a Zustand project, or recommends class component patterns for a hooks-based codebase. It may also 'approve' code that violates project-specific strict TypeScript settings.",
+      "instead": "Always include a context block specifying: React version, Next.js App Router vs Pages Router, state management library, CSS approach, TypeScript strict mode enabled, and any custom architectural rules from CLAUDE.md or REVIEW.md."
+    },
+    {
+      "pattern": "Reviewing code without the diff context",
+      "why_it_fails": "Reviewing an entire file when only 5 lines changed wastes token budget and produces findings about pre-existing code that is not part of the current change. The reviewer cannot distinguish new issues from existing tech debt.",
+      "instead": "Pass the git diff as input, with enough surrounding context (10-20 lines) for the LLM to understand the change. Explicitly instruct: 'Focus findings on the changed lines. Only flag pre-existing issues if they are CRITICAL security or correctness problems.'"
+    },
+    {
+      "pattern": "Not specifying output format",
+      "why_it_fails": "Without a structured format, the LLM returns prose paragraphs mixing critical bugs with trivial style nits. This makes it hard to prioritize, track, or automate follow-up actions.",
+      "instead": "Define a clear schema: severity level, category (performance/security/correctness/style), file path, line number or code snippet, explanation, and suggested fix. Use a table or JSON format for machine-parseable output."
+    },
+    {
+      "pattern": "Ignoring what linters already catch",
+      "why_it_fails": "Prompting the LLM to flag unused variables, missing semicolons, or import ordering duplicates work that ESLint and Prettier already handle automatically. This wastes tokens and dilutes the signal-to-noise ratio of the review.",
+      "instead": "Explicitly exclude lint-catchable issues: 'Do not flag formatting, unused imports, or style issues handled by ESLint. Focus on semantic correctness, architecture decisions, and issues requiring human judgment.'"
+    },
+    {
+      "pattern": "Treating all findings as equal severity",
+      "why_it_fails": "Without severity classification, a missing aria-label gets the same weight as an XSS vulnerability via dangerouslySetInnerHTML. Teams cannot triage effectively.",
+      "instead": "Require severity levels with clear definitions: CRITICAL (security vulnerability, data loss, crash), HIGH (correctness bug, major performance regression), MEDIUM (maintainability, minor perf), LOW (suggestions, alternative approaches)."
+    }
+  ],
+  "implementation_recommendations": [
+    "Create a dedicated frontend review prompt file (e.g., REVIEW-FRONTEND.md) separate from the backend review prompt. Frontend reviews have fundamentally different concerns (DOM rendering, CSS, bundle size, browser APIs) that require specialized instructions.",
+    "Structure the frontend review prompt into clearly labeled sections with XML tags: <component-architecture>, <hooks-correctness>, <render-performance>, <type-safety>, <zustand-state>, <nextjs-patterns>, <accessibility>, <security>, <bundle-size>. This lets reviewers selectively enable/disable sections based on what changed.",
+    "For orbflow's monorepo structure (apps/web + packages/orbflow-core), include a section mapping which review checks apply to which workspace: orbflow-core (headless SDK) should emphasize type safety, API contracts, and store patterns; apps/web should additionally cover JSX accessibility, CSS/Tailwind usage, and Next.js App Router patterns.",
+    "Embed orbflow-specific Zustand patterns in the prompt: orbflow uses canvasStore, workflowStore, executionOverlayStore, and credentialStore. The review prompt should explicitly check that components select only needed slices from these stores and use useShallow when destructuring multiple properties.",
+    "Include a orbflow-specific 'use client' boundary audit section since apps/web uses Next.js 15 App Router. The prompt should verify that src/core/ components (embeddable builder) correctly manage client/server boundaries and that heavy dependencies are not pulled into client bundles.",
+    "Add a CEL expression safety check to the frontend review: since orbflow uses CEL expressions prefixed with '=' that get evaluated by the engine, the review prompt should flag any user-provided CEL expressions rendered without sanitization or any CEL strings constructed via string concatenation instead of the cel-builder utility."
+  ],
+  "prompt_template_fragments": [
+    "## Persona\nYou are a senior frontend engineer specializing in React 19, Next.js 15 App Router, TypeScript (strict mode), and Zustand state management. You review code for correctness, performance, security, and accessibility -- not style (ESLint handles that).",
+    "## Severity Levels\nRate each finding:\n- **CRITICAL**: Security vulnerability (XSS, injection), data loss, application crash\n- **HIGH**: Correctness bug, significant performance regression, broken accessibility\n- **MEDIUM**: Maintainability concern, minor performance issue, incomplete error handling\n- **LOW**: Suggestion for improvement, alternative approach worth considering\n\nOnly flag issues at MEDIUM or above unless specifically asked for LOW-level suggestions.",
+    "## Component Architecture Checks\n- Components should have a single responsibility. Flag components exceeding 200 lines or mixing data fetching, business logic, and presentation.\n- Verify proper separation: container components (data/logic) vs presentational components (pure rendering).\n- Check that shared components in packages/orbflow-core export clean interfaces with well-typed props.\n- Flag prop drilling deeper than 3 levels -- suggest Zustand store or React context instead.",
+    "## Hooks Correctness\n- useEffect dependency arrays must include ALL referenced reactive values. Flag any eslint-disable of exhaustive-deps.\n- useEffect must have cleanup functions for subscriptions, timers, event listeners, and abort controllers.\n- Custom hooks must start with 'use' and follow Rules of Hooks (no conditional calls).\n- useMemo/useCallback: flag if used without measured performance need (premature optimization), but also flag missing memoization on expensive computations or callbacks passed to memoized children.",
+    "## Zustand Store Review\n- Flag: `const { x, y, z } = useStore()` without useShallow -- subscribes to entire store.\n- Prefer: `const x = useStore(s => s.x)` for single values.\n- Prefer: `const { x, y } = useStore(useShallow(s => ({ x: s.x, y: s.y })))` for multiple values.\n- Flag store actions that mutate state directly instead of using set() with a new object.\n- Flag computed values in stores that should be derived selectors instead.",
+    "## Next.js App Router Patterns\n- Verify 'use client' is only on components that need interactivity (onClick, useState, useEffect).\n- Flag large component trees marked as client when only a small child needs interactivity.\n- Check that data fetching uses server components, server actions, or route handlers -- not client-side fetch for initial data.\n- Flag missing loading.tsx, error.tsx, or not-found.tsx in route segments.\n- Verify proper use of next/dynamic for lazy-loading heavy client components.",
+    "## Frontend Security\n- **CRITICAL**: Flag any dangerouslySetInnerHTML without DOMPurify.sanitize().\n- **CRITICAL**: Flag href={userInput} without URL validation (javascript: protocol injection).\n- **CRITICAL**: Flag eval(), new Function(), or document.write() with dynamic content.\n- **HIGH**: Flag sensitive data in localStorage/sessionStorage (use httpOnly cookies).\n- **HIGH**: Flag missing origin checks on postMessage listeners.\n- **HIGH**: Flag CEL expressions constructed via string concatenation instead of the cel-builder utility.",
+    "## Accessibility (WCAG 2.1 AA)\n- All interactive elements must have accessible names (visible text, aria-label, or aria-labelledby).\n- Images: informational images need descriptive alt; decorative images need alt=\"\".\n- Custom interactive elements must use semantic HTML (<button>, <a>) or have role + keyboard handlers.\n- Modals/drawers must implement focus trapping and restore focus on close.\n- Form inputs must have associated <label> elements or aria-label.\n- Color must not be the only means of conveying information (e.g., status indicators need icons or text too).",
+    "## Output Format\nFor each finding, provide:\n```\n### [SEVERITY] Category: Brief title\n**File**: path/to/file.tsx:lineNumber\n**Issue**: What is wrong and why it matters.\n**Fix**:\n```diff\n- problematic code\n+ corrected code\n```\n```"
+  ],
+  "sources": [
+    "https://5ly.co/blog/ai-prompts-for-code-review/ - AI Prompts for Code Review: comprehensive prompt templates for architecture, security, performance (2026)",
+    "https://docsbot.ai/prompts/programming/react-nextjs-code-review - React Next.js Code Review system prompt template",
+    "https://pagepro.co/blog/18-tips-for-a-better-react-code-review-ts-js/ - 18-point React/TypeScript code review checklist",
+    "https://crashoverride.com/blog/prompting-llm-security-reviews - How to Prompt LLMs for Better Security Reviews (PCEI framework)",
+    "https://addyosmani.com/blog/ai-coding-workflow/ - Addy Osmani's LLM coding workflow for 2026",
+    "https://www.perssondennis.com/articles/react-anti-patterns-and-best-practices-dos-and-donts - React Anti-Patterns and Best Practices",
+    "https://jsdev.space/react-anti-patterns-2025/ - 15 React Anti-Patterns and Fixes (2025)",
+    "https://itnext.io/6-common-react-anti-patterns-that-are-hurting-your-code-quality-904b9c32e933 - 6 Common React Anti-Patterns Hurting Code Quality",
+    "https://github.com/pmndrs/zustand/discussions/1916 - Zustand: selecting multiple store props best practice",
+    "https://deepwiki.com/pmndrs/zustand/2.3-selectors-and-re-rendering - Zustand Selectors and Re-rendering patterns",
+    "https://nextjs.org/docs/app/guides/production-checklist - Next.js Production Checklist (official)",
+    "https://nextjs.org/docs/app/getting-started/server-and-client-components - Next.js Server and Client Components (official)",
+    "https://www.invicti.com/blog/web-security/is-react-vulnerable-to-xss - React XSS vulnerability patterns",
+    "https://pragmaticwebsecurity.com/articles/spasecurity/react-xss-part2 - Preventing XSS in React: dangerouslySetInnerHTML",
+    "https://dev.to/sathish_daggula/cursor-claude-my-ai-code-review-checklist-hm5 - Cursor + Claude AI code review checklist",
+    "https://code.claude.com/docs/en/code-review - Claude Code official code review documentation",
+    "https://github.com/anthropics/claude-code/blob/main/plugins/code-review/README.md - Claude Code review plugin (multi-agent parallel review)",
+    "https://www.seangoedecke.com/ai-agents-and-code-review/ - AI agents and code review: effective prompting principles",
+    "https://itnext.io/instantly-boost-your-coding-agents-performance-with-3-simple-prompts-ceb4dc9b5f05 - Boost coding agent performance with structured prompts",
+    "https://microsoft.github.io/code-with-engineering-playbook/code-reviews/recipes/javascript-and-typescript/ - Microsoft Engineering Playbook: JS/TS Code Reviews"
+  ],
+  "relevance_to_orbflow": "Orbflow's frontend is a Next.js 15 App Router application (apps/web) with a headless SDK package (packages/orbflow-core) using Zustand for state management across four core stores (canvasStore, workflowStore, executionOverlayStore, credentialStore). This architecture creates several review-critical surface areas that generic prompts miss entirely. First, the Zustand stores are the central nervous system of the workflow builder -- improper selector usage causes cascading re-renders across the canvas, node picker, and config modals, making Zustand-specific review checks essential. Second, the monorepo split between orbflow-core (zero CSS, headless) and apps/web (visual components) means review prompts must enforce that orbflow-core never imports UI-specific dependencies and that apps/web components use orbflow-core's exported interfaces correctly. Third, orbflow uses CEL expressions extensively for dynamic workflow values, creating a unique frontend security surface: CEL strings prefixed with '=' flow from user input through the frontend builder to engine evaluation, so the review must check that cel-builder utilities are used instead of raw string concatenation and that CEL expressions displayed in the execution viewer are properly sanitized.\n\nThe frontend also handles sensitive credential management (credential-manager components with AES-256-GCM encrypted storage), approval gates for workflow execution, and real-time execution visualization with streaming data -- all areas where standard React review prompts provide insufficient coverage. A orbflow-specific frontend review prompt must address these domain concerns alongside standard React/Next.js/TypeScript/Zustand best practices to be effective.",
+  "automation_hooks": [
+    "Create a PostToolUse hook on file write/edit that triggers a focused frontend review sub-agent when .tsx/.ts files in apps/web/ or packages/orbflow-core/ are modified. The hook should pass the git diff of changed files to the review prompt automatically.",
+    "Configure a Stop hook that runs a frontend review sub-agent on all modified frontend files before the session ends. The sub-agent uses the REVIEW-FRONTEND.md prompt and outputs findings as GitHub-style inline comments on the diff.",
+    "Use Claude Code's parallel sub-agent pattern to run 4 specialized review agents simultaneously: (1) hooks-correctness + render-performance, (2) Zustand store patterns, (3) security + accessibility, (4) Next.js patterns + bundle size. Each agent gets a focused prompt slice and a confidence threshold (>=80) for reporting.",
+    "Add a REVIEW.md file to the repository root with frontend-specific review rules that Claude Code automatically discovers. Include the prompt template fragments for component architecture, Zustand patterns, and security checks so they are applied on every review without manual prompt entry.",
+    "Integrate with git diff via a pre-commit or pre-push hook script that invokes Claude Code with the frontend review prompt on staged .tsx/.ts files. Use the --output-format json flag to produce machine-parseable findings that can block the commit if CRITICAL issues are found.",
+    "Create a slash command (/review-frontend) as a Claude Code skill that loads the frontend review prompt template, automatically scopes to apps/web/ and packages/orbflow-core/ workspaces, and runs the review against the current git diff. The skill should accept optional flags like --security-only or --perf-only to run focused sub-reviews."
+  ],
+  "uncertain": []
+}

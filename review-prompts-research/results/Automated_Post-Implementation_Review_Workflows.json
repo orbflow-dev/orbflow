@@ -1,0 +1,103 @@
+{
+  "key_principles": [
+    "Use Stop hooks to trigger automated review after every implementation wave -- the Stop event fires when Claude finishes responding, making it the natural insertion point for post-implementation checks. Guard against infinite loops by checking the stop_hook_active field.",
+    "Leverage parallel subagent dispatch for multi-perspective review -- launch 3-5 independent review agents simultaneously (security, performance, CLAUDE.md compliance, bug scanning, test coverage) to get thorough coverage without sequential bottleneck.",
+    "Pass wave context via git diff and changed file lists -- use git diff --staged, git diff HEAD~1, and git log to automatically derive the set of changed files and pass them as structured context to each review agent.",
+    "Apply confidence-based scoring (0-100) with a threshold (default 80) to filter false positives -- each review agent scores its findings, and only high-confidence issues surface to the developer.",
+    "Separate deterministic checks (linting, formatting, type-checking) into PostToolUse command hooks and judgment-based review into prompt/agent hooks -- deterministic rules should never rely on LLM judgment.",
+    "Use slash commands (.claude/commands/) as the developer-facing trigger for on-demand reviews, and hooks for automatic enforcement -- slash commands are markdown files that define reusable prompts with tool access control.",
+    "Scope each review agent to its domain to avoid overlap -- agents instructed to only flag issues within the git diff produce higher signal than agents scanning the entire codebase.",
+    "Aggregate results from parallel agents into a single structured report with deduplication -- the lead agent or a final aggregation step merges findings, removes duplicates, and ranks by severity.",
+    "Guard Stop hooks against re-triggering loops by parsing the stop_hook_active boolean from stdin JSON and exiting early (exit 0) when true.",
+    "Store hook configuration in .claude/settings.json for project-specific hooks and ~/.claude/settings.json for global hooks -- project hooks travel with the repo, global hooks apply everywhere."
+  ],
+  "concrete_examples": [
+    {
+      "title": "Stop hook that triggers post-implementation review",
+      "code": "// In .claude/settings.json\n{\n  \"hooks\": {\n    \"Stop\": [\n      {\n        \"matcher\": \"\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"bash $CLAUDE_PROJECT_DIR/scripts/post-impl-review.sh\"\n          }\n        ]\n      }\n    ]\n  }\n}\n\n// scripts/post-impl-review.sh\n#!/bin/bash\nINPUT=$(cat)\nif [ \"$(echo $INPUT | jq -r '.stop_hook_active')\" = \"true\" ]; then\n  exit 0  # Prevent infinite loop\nfi\nCHANGED=$(git diff --name-only HEAD~1)\nif [ -z \"$CHANGED\" ]; then\n  exit 0  # No changes, skip review\nfi\necho \"Run /review-wave on the following changed files: $CHANGED\"\nexit 2  # Exit code 2 = inject message and continue"
+    },
+    {
+      "title": "Slash command for parallel multi-agent review (/review-wave)",
+      "code": "// .claude/commands/review-wave.md\n---\nallowed-tools: Bash(git diff:*), Bash(git log:*), Bash(git show:*)\ndescription: Post-implementation review of recent changes\n---\n\nReview the most recent implementation wave.\n\n1. Run `git diff HEAD~1 --stat` to identify changed files.\n2. Run `git diff HEAD~1` to get the full diff.\n3. Launch 3 parallel agents:\n   - Agent 1 (Security): Scan diff for security issues (injection, auth bypass, secret leaks)\n   - Agent 2 (Architecture): Check for CLAUDE.md compliance, immutability violations, file size limits\n   - Agent 3 (Correctness): Look for logic bugs, missing error handling, untested paths\n4. Each agent scores findings 0-100 confidence. Only report issues >= 80.\n5. Aggregate and deduplicate findings into a single report."
+    },
+    {
+      "title": "PostToolUse hook for auto-formatting after file edits",
+      "code": "// In .claude/settings.json\n{\n  \"hooks\": {\n    \"PostToolUse\": [\n      {\n        \"matcher\": \"(Edit|Write)\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"FILE=$(cat | jq -r '.tool_input.file_path // empty'); if [[ $FILE == *.ts || $FILE == *.tsx ]]; then npx prettier --write \\\"$FILE\\\"; fi\"\n          }\n        ]\n      }\n    ]\n  }\n}"
+    },
+    {
+      "title": "Agent team for comprehensive review with role specialization",
+      "code": "// Prompt to Claude Code lead session:\n\"Create an agent team to review the changes from this implementation wave.\nSpawn 3 teammates:\n  1. security-reviewer: Check all changed files for security issues. Focus on input validation, auth, and secret handling.\n  2. perf-reviewer: Check for N+1 queries, unnecessary allocations, missing indexes.\n  3. test-reviewer: Verify test coverage for changed code paths. Flag untested branches.\nEach teammate should use `git diff main...HEAD` to scope their review.\nRequire plan approval before teammates begin.\nAggregate all findings into a ranked list when done.\""
+    },
+    {
+      "title": "Hook input JSON structure for context passing",
+      "code": "// What a Stop hook receives on stdin:\n{\n  \"session_id\": \"abc123\",\n  \"cwd\": \"/Users/dev/orbflow-rust\",\n  \"hook_event_name\": \"Stop\",\n  \"stop_hook_active\": false,\n  \"transcript_summary\": \"Implemented HTTP retry logic in orbflow-builtins...\"\n}\n\n// Script extracts context and passes to review:\n#!/bin/bash\nINPUT=$(cat)\nACTIVE=$(echo $INPUT | jq -r '.stop_hook_active')\nif [ \"$ACTIVE\" = \"true\" ]; then exit 0; fi\nCWD=$(echo $INPUT | jq -r '.cwd')\nDIFF=$(cd $CWD && git diff --name-only HEAD~1 2>/dev/null)\nif [ -n \"$DIFF\" ]; then\n  echo \"Please review these changed files for issues: $DIFF\"\n  exit 2\nfi\nexit 0"
+    }
+  ],
+  "anti_patterns": [
+    {
+      "pattern": "Stop hook without loop guard",
+      "why_it_fails": "A Stop hook that always returns exit code 2 (continue) creates an infinite loop -- Claude finishes the review, the Stop hook fires again, triggers another review, and so on forever. Always check stop_hook_active and exit 0 when true.",
+      "instead": "Parse the stop_hook_active field from stdin JSON. If true, exit 0 immediately. Only trigger the review on the first Stop event after implementation."
+    },
+    {
+      "pattern": "Single monolithic review agent",
+      "why_it_fails": "A single agent reviewing everything (security + performance + correctness + style) gravitates toward one type of issue and misses others. It also takes longer and uses more context window.",
+      "instead": "Launch 3-5 specialized parallel agents, each focused on one review domain. Aggregate results afterward. This mirrors the official Code Review Plugin pattern."
+    },
+    {
+      "pattern": "Review agents scanning the entire codebase instead of the diff",
+      "why_it_fails": "Reviewing unchanged code wastes tokens, produces irrelevant findings, and overwhelms the developer with noise. Agents lose focus and produce lower-quality findings.",
+      "instead": "Scope each agent to only the git diff output. Instruct agents explicitly: 'Only flag issues that exist within the changed code shown in the diff.'"
+    },
+    {
+      "pattern": "Relying on LLM judgment for deterministic checks",
+      "why_it_fails": "Formatting, linting, and type-checking are deterministic -- asking an LLM to check them is unreliable and wasteful. The LLM may miss obvious violations or hallucinate false ones.",
+      "instead": "Use PostToolUse command hooks for deterministic checks (prettier, clippy, eslint). Reserve prompt/agent hooks for judgment-based review (architecture, security reasoning, design patterns)."
+    },
+    {
+      "pattern": "No confidence scoring or filtering on review output",
+      "why_it_fails": "Without scoring, review agents produce many low-confidence findings that are often false positives. Developers learn to ignore review output entirely, defeating the purpose.",
+      "instead": "Require each agent to score every finding 0-100. Apply a threshold (80+ recommended). Only surface high-confidence issues. This is the pattern used by Anthropic's official Code Review Plugin."
+    }
+  ],
+  "implementation_recommendations": [
+    "Create a .claude/commands/review-wave.md slash command that runs post-implementation review scoped to recent git changes. This gives developers an on-demand trigger while hooks provide automatic enforcement.",
+    "For orbflow's frontend (apps/web, packages/orbflow-core): create a frontend-specific review agent that checks for React anti-patterns, Zustand store immutability, CSS theme consistency, and component file size limits (<800 lines per CLAUDE.md guidelines).",
+    "For orbflow's Rust backend (crates/*): create a backend-specific review agent that checks for port trait compliance, error handling via OrbflowError, proper use of NodeExecutor pattern, and that dependencies point inward (only orbflow-core imported across crate boundaries).",
+    "Configure a PostToolUse hook on Edit/Write tools to auto-run prettier on .ts/.tsx files and cargo fmt on .rs files, ensuring style consistency without LLM involvement.",
+    "Use a Stop hook that detects whether the session involved code changes (via git diff) and automatically triggers /review-wave. Include the stop_hook_active guard to prevent loops.",
+    "Store review agent definitions in .claude/agents/ (e.g., code-reviewer.md, security-reviewer.md) following the existing project convention, and reference them from the slash command.",
+    "For the monorepo structure, have the review slash command detect which workspace was modified (apps/web vs packages/orbflow-core vs crates/) and route to the appropriate specialized reviewer."
+  ],
+  "prompt_template_fragments": [
+    "## Post-Implementation Review Instructions\n\nYou are reviewing code changes from the most recent implementation wave. Your review MUST be scoped to the git diff only -- do not flag issues in unchanged code.\n\n### Context Gathering\n1. Run `git diff HEAD~1 --stat` to identify changed files\n2. Run `git diff HEAD~1` to get the full diff\n3. Identify which workspace was modified: Rust backend (crates/), frontend app (apps/web/), or shared package (packages/orbflow-core/)\n\n### Review Scope\n- Only flag issues visible in the diff\n- Score each finding 0-100 confidence\n- Only report findings with confidence >= 80\n- Categorize: CRITICAL (must fix), HIGH (should fix), MEDIUM (consider fixing)",
+    "## Parallel Agent Dispatch Template\n\nLaunch the following agents in parallel:\n\n### Agent 1: Security Review\nScan the diff for: hardcoded secrets, SQL injection, XSS, CSRF, missing auth checks, error messages leaking internal details. Score each finding 0-100.\n\n### Agent 2: Architecture Review  \nCheck for: CLAUDE.md compliance, immutability violations (mutations instead of new copies), file size > 800 lines, functions > 50 lines, deep nesting > 4 levels, missing error handling, hardcoded values.\n\n### Agent 3: Correctness Review\nLook for: logic bugs, missing edge cases, untested code paths, incorrect error variants, wire format mismatches between frontend and backend.",
+    "## Result Aggregation Template\n\nAfter all review agents complete:\n1. Collect all findings from each agent\n2. Deduplicate findings that flag the same code location\n3. Sort by: CRITICAL first, then HIGH, then MEDIUM\n4. For each finding, include:\n   - File path and line range\n   - Category (security/architecture/correctness)\n   - Description of the issue\n   - Suggested fix\n   - Confidence score\n5. Present as a structured report",
+    "## Stop Hook Review Guard\n\n```bash\n#!/bin/bash\n# scripts/review-guard.sh - Triggers review after implementation, prevents loops\nINPUT=$(cat)\nACTIVE=$(echo $INPUT | jq -r '.stop_hook_active // false')\nif [ \"$ACTIVE\" = \"true\" ]; then\n  exit 0\nfi\nCHANGED=$(git diff --name-only HEAD~1 2>/dev/null | head -50)\nif [ -z \"$CHANGED\" ]; then\n  exit 0\nfi\necho \"Implementation wave complete. Please run /review-wave to review: $CHANGED\"\nexit 2\n```",
+    "## Orbflow-Specific Review Checklist\n\n### Rust Backend\n- [ ] OrbflowError variants used correctly (not generic errors)\n- [ ] NodeExecutor pattern followed for new builtins\n- [ ] Dependencies point inward (only orbflow-core imported across crates)\n- [ ] Immutable domain objects (new copies, not mutations)\n- [ ] Wire types use snake_case matching frontend api.ts\n\n### Frontend\n- [ ] Zustand stores use immutable update patterns\n- [ ] Components < 800 lines, functions < 50 lines\n- [ ] Theme system used (no hardcoded colors)\n- [ ] CEL expressions properly handled (= prefix convention)\n- [ ] API client types match backend wire format"
+  ],
+  "sources": [
+    "https://code.claude.com/docs/en/hooks-guide - Official Claude Code Hooks documentation with event types, input/output schemas, and configuration",
+    "https://code.claude.com/docs/en/agent-teams - Official Claude Code Agent Teams documentation for parallel agent orchestration",
+    "https://github.com/anthropics/claude-code/blob/main/plugins/code-review/README.md - Anthropic's official Code Review Plugin with parallel agents and confidence scoring",
+    "https://github.com/anthropics/claude-code/blob/main/plugins/code-review/commands/code-review.md - Code Review Plugin slash command implementation showing 4-agent parallel review",
+    "https://dev.to/bredmond1019/multi-agent-orchestration-running-10-claude-instances-in-parallel-part-3-29da - Multi-agent orchestration patterns for Claude Code",
+    "https://github.com/hesreallyhim/awesome-claude-code - Curated list of Claude Code hooks, slash commands, and agent orchestrators",
+    "https://blog.gitbutler.com/automate-your-ai-workflows-with-claude-code-hooks - Practical guide to Claude Code hooks automation",
+    "https://claudefa.st/blog/guide/agents/sub-agent-best-practices - Sub-agent parallel vs sequential execution patterns",
+    "https://github.com/affaan-m/everything-claude-code/blob/main/agents/code-reviewer.md - Community code reviewer agent example",
+    "https://www.eesel.ai/blog/hooks-in-claude-code - Practical guide to Claude Code hooks with examples (2026)"
+  ],
+  "relevance_to_orbflow": "Orbflow is a distributed workflow automation engine with a Rust backend (ports-and-adapters architecture across 15+ crates) and a TypeScript/React frontend monorepo. Post-implementation review workflows are directly relevant because orbflow's architecture enforces strict conventions that are easy to violate: dependencies must point inward through orbflow-core, domain objects must be immutable, NodeExecutor implementations must follow a specific pattern, and wire types must use snake_case matching the frontend api.ts types. Automated review workflows using Claude Code hooks and parallel agents can enforce these conventions after every implementation wave without manual oversight.\n\nThe split between frontend and backend makes multi-agent parallel review particularly valuable -- a Rust-focused agent can check port trait compliance, error handling via OrbflowError, and crate boundary rules, while a frontend-focused agent can verify Zustand store immutability, component file sizes, theme system usage, and CEL expression handling. The monorepo structure (apps/web, packages/orbflow-core, crates/) provides natural workspace boundaries for routing changes to the appropriate specialized reviewer.",
+  "automation_hooks": [
+    "Stop hook with stop_hook_active guard: fires after Claude finishes responding, checks git diff for changes, and injects a /review-wave prompt if changes exist. Uses exit code 2 to continue the session with the review prompt.",
+    "PostToolUse hook on Edit/Write tools: auto-runs prettier on .ts/.tsx files and cargo fmt on .rs files after every file edit, ensuring deterministic style compliance without LLM involvement.",
+    "PreToolUse hook on Bash tool: blocks dangerous commands (e.g., git push --force, DROP TABLE) before execution, providing a safety net during implementation waves.",
+    "Slash command .claude/commands/review-wave.md: developer-facing trigger that runs git diff, identifies changed workspaces, and dispatches parallel review agents scoped to the diff.",
+    "Agent team orchestration: lead session spawns 3-5 specialized teammates (security-reviewer, arch-reviewer, test-reviewer) each working in their own context window, with results aggregated by the lead.",
+    "SessionStart hook: on session resume, automatically loads the last wave's review findings from a local file so the developer has context on outstanding issues.",
+    "Notification hook: sends desktop notification when review agents complete, so the developer can switch tasks during the parallel review phase.",
+    "Git diff integration: all review agents receive context via git diff HEAD~1 (for post-commit review) or git diff --staged (for pre-commit review), scoping review to only changed code."
+  ],
+  "uncertain": []
+}

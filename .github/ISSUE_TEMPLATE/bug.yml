@@ -1,0 +1,115 @@
+name: Bug Report
+description: Report a bug in Orbflow
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill out the sections below to help us reproduce and fix the issue.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of the bug.
+      placeholder: What happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Minimal steps to reproduce the behavior.
+      placeholder: |
+        1. Start the server with `just dev`
+        2. Navigate to '...'
+        3. Click on '...'
+        4. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened. Include error messages, logs, or screenshots if available.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of Orbflow is affected?
+      options:
+        - Backend (Rust)
+        - Frontend (Web UI)
+        - Engine (Workflow execution)
+        - API (HTTP/gRPC)
+        - Built-in Nodes
+        - Plugin System
+        - Infrastructure (Docker/NATS/Postgres)
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Orbflow Version
+      description: Run `orbflow-server --version` or check Cargo.toml.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Docker
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment Details
+      description: Any additional environment info (Rust version, Node version, database version, etc.)
+      placeholder: |
+        Rust: 1.85.0
+        Node: 22.x
+        PostgreSQL: 16
+        NATS: 2.11
+      render: text
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs
+      description: Paste any relevant log output. This will be automatically formatted.
+      render: shell
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched existing issues to ensure this is not a duplicate.
+          required: true
+        - label: I am using the latest version of Orbflow.
+          required: false

@@ -1,0 +1,21 @@
+version: v2
+managed:
+  enabled: true
+plugins:
+  # Python ConnectRPC stubs (for orbflow-sdk-python)
+  - remote: buf.build/connectrpc/python
+    out: gen/python
+    opt:
+      - generate_unlinked_packages=true
+
+  # TypeScript/ES ConnectRPC stubs (for orbflow-sdk-typescript)
+  - remote: buf.build/connectrpc/es
+    out: gen/typescript
+
+  # Python protobuf messages
+  - remote: buf.build/protocolbuffers/python
+    out: gen/python
+
+  # TypeScript protobuf messages
+  - remote: buf.build/bufbuild/es
+    out: gen/typescript

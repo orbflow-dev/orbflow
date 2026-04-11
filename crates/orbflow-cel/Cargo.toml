@@ -1,0 +1,17 @@
+[package]
+name = "orbflow-cel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "CEL expression evaluator for Orbflow workflow engine"
+
+[dependencies]
+orbflow-core = { workspace = true }
+cel-interpreter = { workspace = true }
+cel-parser = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+parking_lot = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }

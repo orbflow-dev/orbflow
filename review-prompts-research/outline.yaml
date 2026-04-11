@@ -1,0 +1,64 @@
+topic: review-prompts-research
+description: >
+  Research best practices for Claude Code review prompts and prompt engineering
+  to improve orbflow-review-prompts.md. Goal: split into frontend (React/Next.js/TS)
+  and Rust backend review prompts, make them generic enough to auto-launch after
+  every wave/implementation plan.
+
+items:
+  - name: Claude Code Agent Prompt Best Practices
+    category: Prompt Engineering
+    description: >
+      Best practices for writing prompts that Claude Code sub-agents follow reliably.
+      Focus on: instruction hierarchy, forcing file reads before analysis, output formatting,
+      preventing hallucination of file paths/function names, scoping prompts to changed files only,
+      and techniques for making agents read actual code rather than guess.
+
+  - name: Automated Post-Implementation Review Workflows
+    category: Workflow Automation
+    description: >
+      How to set up automated review workflows in Claude Code that trigger after every
+      implementation wave. Research hooks, slash commands, agent orchestration patterns,
+      and how to pass wave context (changed files, git diff) automatically into review agents.
+      Include patterns for parallel agent execution and result aggregation.
+
+  - name: Frontend Code Review Prompt Patterns
+    category: Frontend Review
+    description: >
+      Best practices for reviewing React, Next.js, TypeScript, and Zustand codebases
+      with AI agents. Focus areas: component architecture, state management patterns,
+      React anti-patterns, accessibility, bundle size, CSS/styling issues, hook correctness,
+      render performance, type safety, and frontend security (XSS, unsafe innerHTML).
+      What makes a frontend review prompt effective vs generic.
+
+  - name: Rust Backend Code Review Prompt Patterns
+    category: Backend Review
+    description: >
+      Best practices for reviewing Rust backend codebases with AI agents. Focus areas:
+      ownership/borrowing issues, async correctness, error handling patterns, unsafe code audit,
+      trait design, crate boundary hygiene, performance (clones in hot paths, allocation patterns),
+      SQL injection, concurrency bugs, and production readiness. What makes a Rust review
+      prompt effective vs generic.
+
+  - name: Generic Implementation Review Template Design
+    category: Template Design
+    description: >
+      How to design review prompt templates that work for ANY implementation plan or wave,
+      not just specific features. Research: parameterization strategies (git diff, changed files list,
+      implementation plan summary), dynamic scoping (only review what changed), severity classification
+      systems, output format standardization, and how to make findings actionable with concrete
+      code fixes rather than vague suggestions.
+
+  - name: Prompt Engineering Anti-Patterns for Code Review
+    category: Anti-Patterns
+    description: >
+      Common mistakes in AI code review prompts that lead to poor results. Research:
+      over-broad scoping (reviewing everything instead of changes), generic OWASP checklists
+      without code context, prompts that don't force reading source files, missing output
+      format constraints leading to walls of text, not demanding concrete code snippets,
+      and prompts that produce false positives or hallucinated findings.
+
+execution:
+  batch_size: 3
+  items_per_agent: 1
+  output_dir: ./results

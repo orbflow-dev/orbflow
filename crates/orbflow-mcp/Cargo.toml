@@ -1,0 +1,18 @@
+[package]
+name = "orbflow-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "MCP (Model Context Protocol) client and server for Orbflow"
+
+[dependencies]
+orbflow-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }

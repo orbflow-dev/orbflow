@@ -1,0 +1,43 @@
+{
+  "name": "@orbflow/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./stores": "./src/stores/index.ts",
+    "./hooks": "./src/hooks/index.ts",
+    "./utils": "./src/utils/index.ts",
+    "./schemas": "./src/schemas/index.ts",
+    "./types": "./src/types/index.ts",
+    "./client": "./src/client/index.ts",
+    "./execution": "./src/execution/index.ts",
+    "./context": "./src/context/index.ts",
+    "./styles": "./src/styles/index.ts",
+    "./components": "./src/components/index.ts",
+    "./components/icons": "./src/components/icons/index.ts",
+    "./components/graph": "./src/components/graph/index.ts",
+    "./components/catalog": "./src/components/catalog/index.ts",
+    "./components/config": "./src/components/config/index.ts"
+  },
+  "peerDependencies": {
+    "@xyflow/react": "^12.0.0",
+    "react": "^19.0.0",
+    "zustand": "^5.0.0"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/dagre": "^0.7.54",
+    "@types/react": "^19.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.1"
+  },
+  "dependencies": {
+    "@dagrejs/dagre": "^3.0.0"
+  }
+}

@@ -1,0 +1,29 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+grpc:
+  enabled: true
+  port: 9090
+
+worker:
+  pool: "default"
+  concurrency: 4
+
+database:
+  dsn: "${DATABASE_URL}"
+
+nats:
+  url: "${NATS_URL}"
+  embedded: false
+  data_dir: ""
+
+credentials:
+  encryption_key: "${CREDENTIAL_ENCRYPTION_KEY}"
+
+plugins:
+  dir: "/plugins"
+
+log:
+  level: "${LOG_LEVEL}"
+  format: "json"

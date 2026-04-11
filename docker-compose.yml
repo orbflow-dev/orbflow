@@ -1,0 +1,38 @@
+services:
+  # -- PostgreSQL --------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-orbflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-orbflow}
+      POSTGRES_DB: ${POSTGRES_DB:-orbflow}
+    ports:
+      - "127.0.0.1:5432:5432"          # Host-only; not exposed to network
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orbflow"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  # -- NATS with JetStream -----------------------------------------------
+  nats:
+    image: nats:2.11-alpine
+    command: ["--jetstream", "--store_dir", "/data", "-m", "8222"]
+    ports:
+      - "127.0.0.1:4222:4222"          # Host-only
+      - "127.0.0.1:8222:8222"          # Monitoring; host-only
+    volumes:
+      - natsdata:/data
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget -qO- http://localhost:8222/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  pgdata:
+  natsdata:

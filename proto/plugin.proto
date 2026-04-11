@@ -1,0 +1,87 @@
+// Copyright 2026 The Orbflow Authors
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+syntax = "proto3";
+
+package orbflow.plugin.v1;
+
+// OrbflowPlugin is the service that external plugin servers implement.
+// Each plugin server can host one or more node types.
+service OrbflowPlugin {
+  // Execute runs a single node with the given input and returns its output.
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+
+  // GetSchemas returns the node type schemas this plugin provides.
+  rpc GetSchemas(GetSchemasRequest) returns (GetSchemasResponse);
+
+  // HealthCheck verifies the plugin server is alive.
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// ExecuteRequest carries all context needed to run a node.
+// Dynamic fields (config, input, etc.) are JSON-encoded strings to keep
+// the proto stable while supporting arbitrary data shapes.
+message ExecuteRequest {
+  string instance_id = 1;
+  string node_id = 2;
+  string plugin_ref = 3;
+  // JSON-encoded HashMap<String, Value> — static node configuration.
+  string config_json = 4;
+  // JSON-encoded HashMap<String, Value> — evaluated upstream output.
+  string input_json = 5;
+  // JSON-encoded HashMap<String, Value> — parameter values.
+  string parameters_json = 6;
+  // JSON-encoded HashMap<String, Value> — capability values (e.g. DB conn).
+  string capabilities_json = 7;
+  // Retry attempt number (0-based).
+  int32 attempt = 8;
+}
+
+// ExecuteResponse carries the result of a node execution.
+message ExecuteResponse {
+  // JSON-encoded HashMap<String, Value> — output data on success.
+  string data_json = 1;
+  // Error message on failure. Empty string means success.
+  string error = 2;
+}
+
+message GetSchemasRequest {}
+
+message GetSchemasResponse {
+  repeated NodeSchema schemas = 1;
+}
+
+// NodeSchema describes a node type's metadata and port definitions.
+// Array fields (inputs, outputs, etc.) are JSON-encoded to avoid deeply
+// nested proto definitions while keeping the wire format simple.
+message NodeSchema {
+  string plugin_ref = 1;
+  string name = 2;
+  string description = 3;
+  string category = 4;
+  string icon = 5;
+  string color = 6;
+  // Optional: "action", "trigger", "capability" — empty means "action".
+  string node_kind = 7;
+  string docs = 8;
+  string image_url = 9;
+  // JSON-encoded Vec<FieldSchema>.
+  string inputs_json = 10;
+  // JSON-encoded Vec<FieldSchema>.
+  string outputs_json = 11;
+  // JSON-encoded Vec<FieldSchema>.
+  string parameters_json = 12;
+  // JSON-encoded Vec<CapabilityPort>.
+  string capability_ports_json = 13;
+  // JSON-encoded Vec<FieldSchema>.
+  string settings_json = 14;
+  // Optional capability this node provides (e.g. "postgres").
+  string provides_capability = 15;
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  bool healthy = 1;
+  string version = 2;
+}

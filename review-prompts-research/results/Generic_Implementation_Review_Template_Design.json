@@ -1,0 +1,117 @@
+{
+  "key_principles": [
+    "Parameterize all context inputs: inject git diff, changed files list, implementation plan summary, and architecture constraints as template variables rather than hardcoding any feature-specific content. Use shell-expandable placeholders like !`git diff main...HEAD` for dynamic injection.",
+    "Enforce structured output schema: every finding must include severity (critical/warning/suggestion), location (file:line), issue description, and a concrete code fix. Prohibit vague suggestions like 'consider adding error handling' — require actionable snippets.",
+    "Scope reviews dynamically to changed files only: use git diff --name-only to build the file list, then filter by glob patterns (e.g., src/**/*.rs for backend, apps/web/**/*.tsx for frontend) to route findings to the correct review domain.",
+    "Use multi-pass review architecture: first pass estimates scope across changed files, second pass groups related files within token limits, third pass performs deep analysis per group, fourth pass synthesizes cross-file insights.",
+    "Separate 'what changed' from 'reference context' explicitly: use XML-style tags like <diff type=\"changed\"> vs <context type=\"reference\"> to prevent the LLM from confusing modified code with surrounding context, reducing hallucinated file references.",
+    "Exclude style/formatting findings by default: explicitly instruct the reviewer to skip style preferences and focus only on correctness, security, performance, and logic errors. This dramatically reduces noise in review output.",
+    "Use few-shot examples in the template for severity calibration: include 2-3 example findings with their severity ratings so the LLM learns your team's severity scale (e.g., hardcoded credentials = Critical, missing JSDoc = Low).",
+    "Chunk large diffs by file or module: for diffs exceeding ~30k tokens, split into file-level or module-level chunks and add the instruction 'Do not assume context outside this chunk; note suspected cross-file risks briefly.'",
+    "Template composability over monolithic prompts: build templates from reusable fragments (severity schema, output format, focus areas) that can be assembled per review type rather than maintaining one giant prompt.",
+    "Include implementation plan as verification context: inject a summary of the implementation plan so the reviewer can verify that changes align with intended design, catching drift between plan and execution."
+  ],
+  "concrete_examples": [
+    {
+      "name": "Parameterized Review Template with Dynamic Injection",
+      "before": "Review the workflow engine changes for bugs and security issues.",
+      "after": "You are reviewing changes from an implementation wave. Here is the context:\n\n<implementation_plan>\n{{PLAN_SUMMARY}}\n</implementation_plan>\n\n<changed_files>\n{{CHANGED_FILES_LIST}}\n</changed_files>\n\n<diff>\n{{GIT_DIFF}}\n</diff>\n\nFor each issue found, output EXACTLY this format:\n## <n>) Severity: CRITICAL|HIGH|MEDIUM|LOW | Type: Bug|Security|Performance|Logic|Maintainability\nTitle: <short imperative>\n\nAffected:\n- path/to/file.ext:lineStart-lineEnd\n\nExplanation:\n<what is wrong, why it matters>\n\nProposed fix:\n```<lang>\n<minimal code snippet>\n```\n\nDo NOT comment on style or formatting. Do NOT echo the diff back. Do NOT add preambles or conclusions."
+    },
+    {
+      "name": "Dynamic Scoping with Glob Filters",
+      "before": "Review all the code changes.",
+      "after": "# Step 1: Identify scope\nChanged files: !`git diff main...HEAD --name-only`\n\n# Step 2: Route to domain\nBackend files (crates/**/*.rs): Review for port/adapter compliance, error handling via OrbflowError, immutability.\nFrontend files (apps/web/**/*.tsx): Review for Zustand store patterns, React best practices, accessibility.\nShared types (packages/orbflow-core/**/*.ts): Review for API contract compatibility, type safety.\n\n# Step 3: Review only files matching the current domain filter\nSkip files without actual diff hunks."
+    },
+    {
+      "name": "Severity Calibration via Few-Shot Examples",
+      "before": "Rate each issue by severity.",
+      "after": "Rate each issue using this severity scale. Examples:\n\nExample 1:\nIssue: SQL query built with string concatenation from user input\nSeverity: CRITICAL\nReasoning: Direct SQL injection vulnerability in production endpoint\n\nExample 2:\nIssue: Unused import left in file\nSeverity: LOW\nReasoning: No functional impact, cosmetic only\n\nExample 3:\nIssue: Mutex held across an await point in async Rust code\nSeverity: HIGH\nReasoning: Can cause deadlocks under concurrent load\n\nNow classify each finding in the diff using the same format."
+    },
+    {
+      "name": "Implementation Plan Alignment Check",
+      "before": "Check if the code looks correct.",
+      "after": "The implementation plan specified:\n{{PLAN_REQUIREMENTS}}\n\nVerify:\n1. Are all planned changes present in the diff? List any MISSING items.\n2. Are there UNPLANNED changes not described in the plan? Flag as 'scope creep'.\n3. Does the implementation match the planned approach, or has it drifted?\n4. Are error handling and edge cases from the plan addressed?\n\nOutput a checklist with status: DONE | MISSING | DRIFTED | EXTRA for each planned item."
+    },
+    {
+      "name": "Composable Template Fragment Assembly",
+      "before": "One large monolithic review prompt.",
+      "after": "# Template fragments (combine as needed):\n\n## fragment: output-format.md\nFor each issue: Severity | Type | Title | Affected files:lines | Explanation | Proposed fix\n\n## fragment: focus-security.md\nFocus on: OWASP top 10, credential exposure, injection, auth bypass, rate limiting\n\n## fragment: focus-rust-backend.md\nFocus on: async safety, error propagation via OrbflowError, trait implementation correctness, unsafe blocks\n\n## fragment: focus-react-frontend.md\nFocus on: hook rules, state management patterns, XSS via dangerouslySetInnerHTML, accessibility\n\n## fragment: plan-alignment.md\n[plan alignment check template]\n\n# Assembly: cat output-format.md focus-rust-backend.md plan-alignment.md > review-prompt.md"
+    }
+  ],
+  "anti_patterns": [
+    {
+      "pattern": "Hardcoding feature names or file paths in the review template",
+      "why_it_fails": "Makes the template single-use. Every new feature requires editing the prompt, defeating the purpose of a generic template.",
+      "instead": "Use parameterized placeholders like {{CHANGED_FILES}}, {{GIT_DIFF}}, {{PLAN_SUMMARY}} that are populated at invocation time via shell expansion or template engines."
+    },
+    {
+      "pattern": "Asking for review without structured output format",
+      "why_it_fails": "LLMs produce inconsistent, narrative-style feedback that is hard to parse, track, or act on. Findings get buried in prose.",
+      "instead": "Define an explicit output schema with numbered issues, each containing severity, location, description, and concrete fix. Prohibit preambles, conclusions, and diff echoing."
+    },
+    {
+      "pattern": "Reviewing the entire codebase instead of scoping to changed files",
+      "why_it_fails": "Wastes token budget on unchanged code, produces irrelevant findings about pre-existing issues, and dilutes focus from the actual changes being reviewed.",
+      "instead": "Use git diff --name-only to identify changed files, filter by domain-specific globs, and only include diff hunks in the review context."
+    },
+    {
+      "pattern": "Including style and formatting feedback alongside correctness issues",
+      "why_it_fails": "Style comments (variable naming preferences, brace placement) create noise that drowns out critical bugs and security issues. Developers learn to ignore the output.",
+      "instead": "Explicitly exclude style feedback in the prompt: 'Do NOT comment on style preferences or formatting. Only flag issues that affect correctness, security, or performance.' Use linters for style enforcement."
+    },
+    {
+      "pattern": "Single-pass review of large diffs without chunking",
+      "why_it_fails": "LLMs lose focus and accuracy on large inputs. Findings become shallow or miss issues in later files. Token limits may truncate important context.",
+      "instead": "Chunk diffs by file or module (targeting ~30k tokens per chunk), review each chunk independently, then run a synthesis pass to catch cross-file issues."
+    },
+    {
+      "pattern": "Vague severity labels without calibration examples",
+      "why_it_fails": "Without examples, 'HIGH' severity means different things to different prompt runs. The LLM may flag minor issues as critical or underrate real vulnerabilities.",
+      "instead": "Include 2-3 few-shot examples that demonstrate your severity scale with concrete reasoning, so the LLM calibrates its classifications consistently."
+    }
+  ],
+  "implementation_recommendations": [
+    "Create a review-templates/ directory in the orbflow-rust repo with composable fragments: output-format.md, focus-rust-backend.md, focus-react-frontend.md, focus-shared-types.md, plan-alignment.md. Assemble these dynamically based on which files changed in the diff.",
+    "Use git diff --name-only main...HEAD piped through grep patterns to auto-detect whether the review should use the Rust backend template (crates/**), the React frontend template (apps/web/**), or the shared SDK template (packages/orbflow-core/**). Multiple templates can fire in parallel for cross-domain changes.",
+    "Build a review.sh shell script that: (1) captures git diff main...HEAD, (2) captures git diff --name-only main...HEAD, (3) reads the implementation plan summary from a known location (e.g., docs/design/current-plan.md), (4) assembles the appropriate template fragments, (5) injects all variables, and (6) invokes Claude Code with the composed prompt.",
+    "For orbflow's ports-and-adapters architecture, add a backend-specific checklist fragment that verifies: port trait implementations match orbflow-core signatures, OrbflowError variants are used correctly, no cross-crate boundary violations, wire types maintain JSON snake_case compatibility.",
+    "For orbflow's frontend, add a frontend-specific checklist fragment that verifies: Zustand store immutability patterns, proper use of orbflow-core SDK exports, no direct API calls bypassing createApiClient(), React hook rules compliance, and accessibility standards.",
+    "Integrate review templates with Claude Code hooks: create a PostToolUse hook that automatically triggers the appropriate review template after git commit operations, or create a /review slash command that accepts an optional --plan flag to include plan-alignment checking.",
+    "Store severity calibration examples specific to orbflow's codebase: e.g., 'Mutating Instance in place instead of creating a new copy = HIGH (violates immutability principle)', 'Missing rate limiting on new HTTP endpoint = CRITICAL', 'Unused import = LOW'."
+  ],
+  "prompt_template_fragments": [
+    "## OUTPUT FORMAT\nFor each issue found, provide EXACTLY this structure:\n\n## <n>) Severity: CRITICAL|HIGH|MEDIUM|LOW | Type: Bug|Security|Performance|Logic|Maintainability\nTitle: <short imperative description>\n\nAffected:\n- path/to/file.ext:lineStart-lineEnd\n\nExplanation:\n<What is wrong and why it matters. Reference specific code from the diff.>\n\nProposed fix:\n```<lang>\n<minimal code snippet showing the corrected code>\n```\n\nRules:\n- Do NOT echo the diff back\n- Do NOT add preambles or conclusions\n- Do NOT comment on style or formatting\n- Only flag issues affecting correctness, security, or performance\n- If no issues found, output exactly: \"No issues found.\"",
+    "## DYNAMIC CONTEXT INJECTION\nYou are reviewing changes for the orbflow workflow automation platform.\n\nBranch: !`git branch --show-current`\nChanged files:\n!`git diff main...HEAD --name-only`\n\nDiff:\n```\n!`git diff main...HEAD`\n```\n\nImplementation plan summary:\n!`cat docs/design/current-plan.md 2>/dev/null || echo 'No plan file found'`",
+    "## DOMAIN ROUTING\nBased on changed files, apply the relevant review focus:\n\nIF crates/**/*.rs changed:\n- Verify port trait compliance with orbflow-core definitions\n- Check OrbflowError usage (correct variants, no raw strings)\n- Ensure immutable patterns (new Instance copies, not mutation)\n- Validate async safety (no mutex held across .await)\n- Check wire type JSON field naming (snake_case)\n\nIF apps/web/**/*.tsx changed:\n- Verify Zustand store immutability (no direct state mutation)\n- Check React hook rules (no conditional hooks)\n- Validate accessibility (aria labels, keyboard navigation)\n- Ensure API calls go through createApiClient()\n\nIF packages/orbflow-core/**/*.ts changed:\n- Verify type exports match API contract\n- Check for breaking changes to public API surface\n- Validate store action signatures",
+    "## PLAN ALIGNMENT CHECK\nThe implementation plan for this wave specified:\n{{PLAN_SUMMARY}}\n\nFor each planned item, verify:\n| Planned Item | Status | Evidence |\n|---|---|---|\n| <item> | DONE / MISSING / DRIFTED / EXTRA | <file:line or explanation> |\n\nFlag any changes in the diff that are NOT described in the plan as UNPLANNED.",
+    "## SEVERITY CALIBRATION (orbflow-specific)\nUse these examples to calibrate your severity ratings:\n\nCRITICAL:\n- SQL injection in orbflow-postgres query building\n- Credential encryption key exposed in config\n- Bus message deserialization allowing arbitrary code execution\n\nHIGH:\n- Mutating Instance in-place instead of creating new copy\n- Missing authentication check on HTTP API endpoint\n- Deadlock risk from mutex held across async .await\n- CEL expression injection without sanitization\n\nMEDIUM:\n- Missing error variant in OrbflowError for new failure mode\n- No retry logic on transient NATS connection failure\n- React component missing error boundary\n\nLOW:\n- Unused import or variable\n- Minor naming inconsistency\n- Missing doc comment on internal function"
+  ],
+  "sources": [
+    "https://github.com/nurettincoban/diff2ai - diff2ai: tool for generating AI code review prompts from git diffs with customizable templates",
+    "https://graphite.com/guides/effective-prompt-engineering-ai-code-reviews - Graphite guide on effective prompt engineering for AI code reviews",
+    "https://www.anthonybordonaro.com/ai-toolkit/code-review-prompt - Structured code review prompt with severity/location/fix format",
+    "https://github.com/disler/diffbro - diffbro: CLI tool using git diff with GPT for code review",
+    "https://odsc.medium.com/context-engineering-for-ai-code-reviews-fix-critical-bugs-with-outside-diff-impact-slicing-6d1ec2fc87e9 - Context engineering for AI code reviews with outside-diff impact slicing",
+    "https://taskautomation.dev/blog/code-review - Guide on automating code review with git hooks",
+    "https://5ly.co/blog/ai-prompts-for-code-review/ - AI prompts for code review with structured output patterns",
+    "https://www.josecasanova.com/blog/claude-code-review-prompt - Simple Claude code review prompt design",
+    "https://www.eesel.ai/blog/claude-code-best-practices - Claude Code best practices for 2026",
+    "https://dev.to/pwd9000/mastering-code-reviews-with-github-copilot-the-definitive-guide-3nfp - Mastering code reviews with GitHub Copilot",
+    "https://nikiforovall.blog/productivity/2025/05/03/github-copilot-prompt-engineering-code-review.html - Code review with GitHub Copilot prompt engineering",
+    "https://www.365iwebdesign.co.uk/news/2026/01/29/how-to-use-dynamic-context-injection-claude-code/ - Dynamic context injection in Claude Code",
+    "https://modelcontextprotocol.io/specification/2025-06-18/server/prompts - MCP prompt specification for parameterized templates",
+    "https://arxiv.org/html/2505.16339v1 - Rethinking Code Review Workflows with LLM Assistance (2025)",
+    "https://arxiv.org/html/2404.18496v2 - AI-powered Code Review with LLMs: Early Results"
+  ],
+  "relevance_to_orbflow": "Orbflow's architecture as a distributed workflow engine with a strict ports-and-adapters pattern makes generic review templates especially valuable. The codebase spans three distinct domains — Rust backend crates (engine, stores, bus, builtins), a React/Next.js frontend (apps/web), and a shared TypeScript SDK (packages/orbflow-core) — each with different review concerns. A parameterized template system allows a single review invocation to dynamically route to domain-specific checklists based on which files changed in the diff. For example, changes to orbflow-engine need verification of DAG coordination and saga compensation logic, while changes to orbflow-httpapi need rate limiting and response envelope compliance checks, and frontend changes need Zustand immutability and accessibility verification. The implementation plan alignment feature is particularly relevant because orbflow uses phased implementation waves (as seen in the docs/design/ directory), and review templates can automatically verify that each wave's changes match the planned scope without requiring manual prompt editing per wave.",
+  "automation_hooks": [
+    "Create a Claude Code slash command /review that assembles the appropriate template fragments based on git diff --name-only output, injects the diff and plan summary, and runs the review. Usage: /review or /review --plan docs/design/current-wave.md",
+    "Use Claude Code's !`command` dynamic context injection syntax to populate template variables at invocation time: !`git diff main...HEAD` for the diff, !`git diff main...HEAD --name-only` for the file list, !`git branch --show-current` for branch context.",
+    "Implement a PostToolUse hook on git commit that triggers a lightweight review (LOW and MEDIUM severity only) as a pre-push quality gate, catching issues before they reach PR review.",
+    "Build a review.sh script that: (1) detects changed domains via file path patterns, (2) selects and concatenates the appropriate template fragments, (3) injects git diff and plan summary, (4) pipes to Claude Code via stdin. Wire this into CI as a GitHub Action step.",
+    "Use .aidiffignore-style patterns (similar to diff2ai) to exclude noise files from review scope: **/*.lock, **/dist/**, **/*.generated.ts, pnpm-lock.yaml, Cargo.lock.",
+    "Create a beforesave hook or pre-commit hook that runs a scoped mini-review on staged files only, using git diff --cached as the input, providing immediate feedback before the full PR review.",
+    "Store review results as structured JSON (matching the output format template) in a .reviews/ directory, enabling trend analysis of issue types and severity across waves."
+  ],
+  "uncertain": []
+}

@@ -1,0 +1,20 @@
+[package]
+name = "orbflow-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Workflow testing framework: unit test nodes, integration test workflows, replay executions"
+
+[dependencies]
+orbflow-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }

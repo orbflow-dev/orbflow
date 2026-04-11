@@ -1,0 +1,54 @@
+name: Buf Proto CI
+
+on:
+  push:
+    paths:
+      - "proto/**"
+      - "buf.yaml"
+      - "buf.gen.yaml"
+    branches:
+      - main
+  pull_request:
+    paths:
+      - "proto/**"
+      - "buf.yaml"
+      - "buf.gen.yaml"
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Buf Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: bufbuild/buf-action@7a1a56d2c394f18a3e781e3f4b21901b5e1dca23 # v1.1.0
+        with:
+          setup_only: true
+      - run: buf lint
+
+  breaking:
+    name: Breaking Change Detection
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: bufbuild/buf-action@7a1a56d2c394f18a3e781e3f4b21901b5e1dca23 # v1.1.0
+        with:
+          setup_only: true
+      - run: buf breaking --against "https://github.com/${{ github.repository }}.git#branch=${{ github.event.pull_request.base.ref }}"
+
+  push:
+    name: Push to BSR
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [lint, breaking]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: bufbuild/buf-action@7a1a56d2c394f18a3e781e3f4b21901b5e1dca23 # v1.1.0
+        with:
+          setup_only: true
+      - run: buf push
+        env:
+          BUF_TOKEN: ${{ secrets.BUF_TOKEN }}

@@ -1,0 +1,147 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/orbflow-core",
+    "crates/orbflow-cel",
+    "crates/orbflow-engine",
+    "crates/orbflow-memstore",
+    "crates/orbflow-postgres",
+    "crates/orbflow-natsbus",
+    "crates/orbflow-httpapi",
+    "crates/orbflow-grpcapi",
+    "crates/orbflow-worker",
+    "crates/orbflow-builtins",
+    "crates/orbflow-trigger",
+    "crates/orbflow-plugin",
+    "crates/orbflow-config",
+    "crates/orbflow-testutil",
+    "crates/orbflow-test",
+    "crates/orbflow-mcp",
+    "crates/orbflow-registry",
+    "crates/orbflow-server",
+    "crates/orbflow-worker-bin",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+authors = ["The Orbflow Authors"]
+repository = "https://github.com/orbflow-dev/orbflow"
+homepage = "https://github.com/orbflow-dev/orbflow"
+description = "Distributed workflow automation engine built for AI-native workloads"
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP
+axum = { version = "0.8", features = ["json", "macros"] }
+tower = { version = "0.5" }
+tower-http = { version = "0.6", features = ["cors", "limit", "trace"] }
+tower_governor = { version = "0.8", features = ["tracing"] }
+governor = "0.10"
+reqwest = { version = "0.13", features = ["json", "rustls"], default-features = false }
+http-body-util = "0.1"
+
+# gRPC
+tonic = "0.14"
+tonic-build = "0.14"
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
+prost = "0.14"
+protox = "0.9"
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "json", "chrono", "uuid"] }
+
+# NATS
+async-nats = "0.46"
+
+# CEL
+cel-interpreter = "0.10"
+cel-parser = "0.10"
+
+# Crypto
+aes-gcm = "0.10"
+hmac = "0.12"
+sha2 = "0.10"
+md-5 = "0.10"
+base64 = "0.22"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+subtle = "2"
+
+# OpenTelemetry
+opentelemetry = { version = "0.31", features = ["metrics"] }
+opentelemetry_sdk = { version = "0.31", features = ["metrics", "trace"] }
+opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic", "metrics", "trace"] }
+tracing-opentelemetry = "0.32"
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+thiserror = "2"
+async-trait = "0.1"
+dashmap = "6"
+parking_lot = "0.12"
+rand = "0.10"
+regex = "1"
+url = "2"
+tokio-stream = "0.1"
+bytes = "1"
+
+# Env
+dotenvy = "0.15"
+
+# AI
+genai = "0.5"
+
+# Email
+lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+
+# Template
+tera = "1"
+
+# Cron
+tokio-cron-scheduler = "0.15"
+
+# Embed
+rust-embed = "8"
+
+# Testing
+tokio-test = "0.4"
+
+# Workspace crates
+orbflow-core = { path = "crates/orbflow-core" }
+orbflow-cel = { path = "crates/orbflow-cel" }
+orbflow-engine = { path = "crates/orbflow-engine" }
+orbflow-memstore = { path = "crates/orbflow-memstore" }
+orbflow-postgres = { path = "crates/orbflow-postgres" }
+orbflow-natsbus = { path = "crates/orbflow-natsbus" }
+orbflow-httpapi = { path = "crates/orbflow-httpapi" }
+orbflow-grpcapi = { path = "crates/orbflow-grpcapi" }
+orbflow-worker = { path = "crates/orbflow-worker" }
+orbflow-builtins = { path = "crates/orbflow-builtins" }
+orbflow-trigger = { path = "crates/orbflow-trigger" }
+orbflow-plugin = { path = "crates/orbflow-plugin" }
+orbflow-config = { path = "crates/orbflow-config" }
+orbflow-mcp = { path = "crates/orbflow-mcp" }
+orbflow-registry = { path = "crates/orbflow-registry" }
+orbflow-test = { path = "crates/orbflow-test" }
+orbflow-testutil = { path = "crates/orbflow-testutil" }
+
+# Disable PDB debug info to avoid Windows MSVC linker limits (LNK1318)
+[profile.dev]
+debug = false
+split-debuginfo = "off"
+
+[profile.test]
+debug = false
+split-debuginfo = "off"

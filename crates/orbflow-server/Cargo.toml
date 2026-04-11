@@ -1,0 +1,30 @@
+[package]
+name = "orbflow-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Orbflow server binary (coordinator + API)"
+
+[[bin]]
+name = "orbflow-server"
+path = "src/main.rs"
+
+[dependencies]
+orbflow-core = { workspace = true }
+orbflow-engine = { workspace = true }
+orbflow-postgres = { workspace = true }
+orbflow-natsbus = { workspace = true }
+orbflow-httpapi = { workspace = true }
+orbflow-grpcapi = { workspace = true }
+orbflow-builtins = { workspace = true }
+orbflow-trigger = { workspace = true }
+orbflow-plugin = { workspace = true }
+orbflow-registry = { workspace = true }
+orbflow-config = { workspace = true }
+orbflow-worker = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+dotenvy = { workspace = true }
+serde_json = { workspace = true }

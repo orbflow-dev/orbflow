@@ -1,0 +1,18 @@
+[package]
+name = "orbflow-memstore"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "In-memory Store implementation for testing"
+
+[dependencies]
+orbflow-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }

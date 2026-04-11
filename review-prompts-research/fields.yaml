@@ -1,0 +1,47 @@
+fields:
+  - name: key_principles
+    type: array
+    description: >
+      List of 5-10 key principles or best practices discovered. Each should be a
+      concrete, actionable guideline (not vague advice).
+
+  - name: concrete_examples
+    type: array
+    description: >
+      3-5 concrete prompt snippets or patterns that demonstrate the principle in action.
+      Include before/after comparisons where possible.
+
+  - name: anti_patterns
+    type: array
+    description: >
+      Common mistakes or anti-patterns to avoid. Each should explain WHY it fails
+      and what to do instead.
+
+  - name: implementation_recommendations
+    type: array
+    description: >
+      Specific recommendations for how to apply these findings to orbflow's review prompts.
+      Should reference the split into frontend vs backend files.
+
+  - name: prompt_template_fragments
+    type: array
+    description: >
+      Ready-to-use prompt fragments or sections that can be directly incorporated
+      into the final review prompt files.
+
+  - name: sources
+    type: array
+    description: >
+      URLs, documentation references, or sources where the information was found.
+
+  - name: relevance_to_orbflow
+    type: string
+    description: >
+      1-2 paragraph explanation of how this research item specifically applies to
+      the orbflow workflow automation platform's review needs.
+
+  - name: automation_hooks
+    type: array
+    description: >
+      Specific techniques for automating this aspect of review (Claude Code hooks,
+      git diff integration, slash commands, etc.)

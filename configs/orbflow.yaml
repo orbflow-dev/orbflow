@@ -1,0 +1,22 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+worker:
+  pool: "default"
+  concurrency: 4
+
+database:
+  dsn: "${DATABASE_URL:-postgres://orbflow:orbflow@localhost:5432/orbflow?sslmode=require}"
+
+nats:
+  url: "nats://127.0.0.1:4222"
+  embedded: true
+  data_dir: "/tmp/orbflow-nats"
+
+credentials:
+  encryption_key: "${CREDENTIAL_ENCRYPTION_KEY}"
+
+log:
+  level: "info"
+  format: "json"

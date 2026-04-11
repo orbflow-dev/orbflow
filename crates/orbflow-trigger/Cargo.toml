@@ -1,0 +1,26 @@
+[package]
+name = "orbflow-trigger"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Cron, webhook, and event trigger system"
+
+[dependencies]
+orbflow-core = { workspace = true }
+axum = { workspace = true }
+hmac = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+tokio-cron-scheduler = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+dashmap = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
