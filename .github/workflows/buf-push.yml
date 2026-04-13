@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: bufbuild/buf-action@1b8e0a0e793562b7850d7e6ff0228b5c0b16111c # v1.1.0
+      - uses: bufbuild/buf-action@fd21066df7214747548607aaa45548ba2b9bc1ff # v1.4.0
         with:
           setup_only: true
       - run: buf lint
@@ -36,7 +36,7 @@ jobs:
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: bufbuild/buf-action@1b8e0a0e793562b7850d7e6ff0228b5c0b16111c # v1.1.0
+      - uses: bufbuild/buf-action@fd21066df7214747548607aaa45548ba2b9bc1ff # v1.4.0
         with:
           setup_only: true
       - run: buf breaking --against "https://github.com/${{ github.repository }}.git#branch=${{ github.event.pull_request.base.ref }}"
@@ -50,7 +50,7 @@ jobs:
       BUF_TOKEN: ${{ secrets.BUF_TOKEN }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: bufbuild/buf-action@1b8e0a0e793562b7850d7e6ff0228b5c0b16111c # v1.1.0
+      - uses: bufbuild/buf-action@fd21066df7214747548607aaa45548ba2b9bc1ff # v1.4.0
         with:
           setup_only: true
       - if: env.BUF_TOKEN != ''
