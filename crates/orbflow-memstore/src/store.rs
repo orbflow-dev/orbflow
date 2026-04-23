@@ -150,7 +150,7 @@ impl WorkflowStore for MemStore {
             .iter()
             .map(deep_clone)
             .collect::<Result<Vec<_>, _>>()?;
-        all.sort_by(|a, b| b.version.cmp(&a.version));
+        all.sort_by_key(|b| std::cmp::Reverse(b.version));
         let total = all.len() as i64;
         let page = paginate(&all, &opts);
         Ok((page, total))
@@ -416,7 +416,7 @@ impl ChangeRequestStore for MemStore {
             .map(deep_clone)
             .collect::<Result<Vec<_>, _>>()?;
         // Sort by created_at descending (newest first), matching Postgres behavior.
-        filtered.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        filtered.sort_by_key(|b| std::cmp::Reverse(b.created_at));
         let total = filtered.len() as i64;
         let page = paginate(&filtered, &opts);
         Ok((page, total))
