@@ -170,6 +170,9 @@ pub struct ChangeRequest {
     pub base_version: i32,
     /// Current status.
     pub status: ChangeRequestStatus,
+    /// Why the CR was rejected, if applicable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection_reason: Option<String>,
     /// Who created the CR.
     pub author: String,
     /// Assigned reviewers.
@@ -296,6 +299,7 @@ mod tests {
             proposed_definition: v2_definition(),
             base_version: 1,
             status: ChangeRequestStatus::Open,
+            rejection_reason: None,
             author: "alice".into(),
             reviewers: vec!["bob".into()],
             comments: vec![ReviewComment {

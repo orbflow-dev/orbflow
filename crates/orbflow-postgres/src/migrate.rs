@@ -280,6 +280,13 @@ ALTER TABLE credentials
     ADD COLUMN IF NOT EXISTS policy JSONB;
 "#,
     ),
+    (
+        "016_cr_rejection_reason",
+        r#"
+ALTER TABLE change_requests
+    ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
+"#,
+    ),
 ];
 
 /// Runs all embedded migrations in order.

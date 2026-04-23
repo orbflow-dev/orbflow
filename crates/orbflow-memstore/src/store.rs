@@ -1063,6 +1063,7 @@ mod tests {
             proposed_definition: serde_json::json!({"nodes": [], "edges": []}),
             base_version: 1,
             status: ChangeRequestStatus::Open,
+            rejection_reason: None,
             author: "alice".into(),
             reviewers: vec!["bob".into()],
             comments: vec![],
