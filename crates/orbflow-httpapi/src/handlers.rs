@@ -3257,7 +3257,6 @@ pub async fn reject_change_request(
     State(state): State<AppState>,
     axum::Extension(auth_user): axum::Extension<AuthUser>,
     Path(params): Path<ChangeRequestPathParams>,
-    // TODO: store body.reason when ChangeRequest gains a rejection_reason field
     Json(body): Json<RejectChangeRequestBody>,
 ) -> Response {
     if let Err(resp) = check_permission(
@@ -3270,8 +3269,6 @@ pub async fn reject_change_request(
     ) {
         return resp;
     }
-
-    let _ = &body; // acknowledge the body to suppress unused warnings
 
     let store = match &state.change_request_store {
         Some(s) => s,
@@ -3310,6 +3307,7 @@ pub async fn reject_change_request(
 
     let updated = orbflow_core::ChangeRequest {
         status: orbflow_core::ChangeRequestStatus::Rejected,
+        rejection_reason: body.reason,
         updated_at: Utc::now(),
         ..cr
     };

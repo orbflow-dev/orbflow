@@ -28,6 +28,7 @@ struct ChangeRequestRow {
     status: String,
     author: String,
     reviewers: serde_json::Value,
+    rejection_reason: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -45,6 +46,7 @@ struct ChangeRequestRowWithTotal {
     status: String,
     author: String,
     reviewers: serde_json::Value,
+    rejection_reason: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     total: i64,
@@ -76,6 +78,7 @@ struct ChangeRequestFields<'a> {
     status: &'a str,
     author: &'a str,
     reviewers: &'a serde_json::Value,
+    rejection_reason: &'a Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -102,6 +105,7 @@ fn map_change_request_fields(f: ChangeRequestFields<'_>) -> Result<ChangeRequest
         status,
         author: f.author.to_string(),
         reviewers,
+        rejection_reason: f.rejection_reason.clone(),
         comments: Vec::new(),
         created_at: f.created_at,
         updated_at: f.updated_at,
@@ -119,6 +123,7 @@ fn row_to_change_request(row: &ChangeRequestRow) -> Result<ChangeRequest, Orbflo
         status: &row.status,
         author: &row.author,
         reviewers: &row.reviewers,
+        rejection_reason: &row.rejection_reason,
         created_at: row.created_at,
         updated_at: row.updated_at,
     })
@@ -137,6 +142,7 @@ fn row_to_change_request_from_total(
         status: &row.status,
         author: &row.author,
         reviewers: &row.reviewers,
+        rejection_reason: &row.rejection_reason,
         created_at: row.created_at,
         updated_at: row.updated_at,
     })
@@ -174,8 +180,8 @@ impl PgStore {
         })?;
 
         sqlx::query(
-            r#"INSERT INTO change_requests (id, workflow_id, title, description, proposed_definition, base_version, status, author, reviewers, created_at, updated_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"#,
+            r#"INSERT INTO change_requests (id, workflow_id, title, description, proposed_definition, base_version, status, author, reviewers, rejection_reason, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"#,
         )
         .bind(&cr.id)
         .bind(cr.workflow_id.0.as_str())
@@ -186,6 +192,7 @@ impl PgStore {
         .bind(status_str)
         .bind(&cr.author)
         .bind(&reviewers_val)
+        .bind(&cr.rejection_reason)
         .bind(cr.created_at)
         .bind(cr.updated_at)
         .execute(&self.pool)
@@ -200,7 +207,7 @@ impl PgStore {
     /// Gets a change request by ID, including its comments.
     pub(crate) async fn get_change_request(&self, id: &str) -> Result<ChangeRequest, OrbflowError> {
         let row: ChangeRequestRow = sqlx::query_as(
-            r#"SELECT id, workflow_id, title, description, proposed_definition, base_version, status, author, reviewers, created_at, updated_at
+            r#"SELECT id, workflow_id, title, description, proposed_definition, base_version, status, author, reviewers, rejection_reason, created_at, updated_at
                FROM change_requests
                WHERE id = $1"#,
         )
@@ -255,7 +262,7 @@ impl PgStore {
 
             sqlx::query_as(
                 r#"SELECT id, workflow_id, title, description, proposed_definition,
-                          base_version, status, author, reviewers, created_at, updated_at,
+                          base_version, status, author, reviewers, rejection_reason, created_at, updated_at,
                           COUNT(*) OVER() AS total
                    FROM change_requests
                    WHERE workflow_id = $1 AND status = $2
@@ -276,7 +283,7 @@ impl PgStore {
         } else {
             sqlx::query_as(
                 r#"SELECT id, workflow_id, title, description, proposed_definition,
-                          base_version, status, author, reviewers, created_at, updated_at,
+                          base_version, status, author, reviewers, rejection_reason, created_at, updated_at,
                           COUNT(*) OVER() AS total
                    FROM change_requests
                    WHERE workflow_id = $1
@@ -319,14 +326,15 @@ impl PgStore {
 
         let result = sqlx::query(
             r#"UPDATE change_requests
-               SET title = $1, description = $2, proposed_definition = $3, status = $4, reviewers = $5, updated_at = $6
-               WHERE id = $7"#,
+               SET title = $1, description = $2, proposed_definition = $3, status = $4, reviewers = $5, rejection_reason = $6, updated_at = $7
+               WHERE id = $8"#,
         )
         .bind(&cr.title)
         .bind(&cr.description)
         .bind(&cr.proposed_definition)
         .bind(status_str)
         .bind(&reviewers_val)
+        .bind(&cr.rejection_reason)
         .bind(cr.updated_at)
         .bind(&cr.id)
         .execute(&self.pool)
