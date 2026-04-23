@@ -2910,6 +2910,7 @@ pub async fn create_change_request(
         proposed_definition: body.proposed_definition,
         base_version: body.base_version,
         status: orbflow_core::ChangeRequestStatus::Draft,
+        rejection_reason: None,
         author: body.author,
         reviewers: body.reviewers,
         comments: Vec::new(),

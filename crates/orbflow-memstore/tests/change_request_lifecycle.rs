@@ -80,6 +80,7 @@ fn make_change_request(
         }),
         base_version,
         status,
+        rejection_reason: None,
         author: "alice".into(),
         reviewers: vec!["bob".into()],
         comments: vec![],
