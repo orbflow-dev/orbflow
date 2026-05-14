@@ -95,12 +95,22 @@ export function extractContentType(headers: unknown): string | null {
   return null;
 }
 
-/** Block unsafe URL schemes that are XSS vectors (javascript:, data:text/html, etc). */
-const UNSAFE_URL_SCHEMES = ["javascript:", "data:text/html", "data:application/"] as const;
+/** Block unsafe URL schemes that are XSS vectors (javascript:, vbscript:, etc). */
+const UNSAFE_URL_SCHEMES = ["javascript:", "vbscript:"] as const;
 
 export function isSafeUrl(url: string): boolean {
-  const lower = url.trim().toLowerCase();
-  return !UNSAFE_URL_SCHEMES.some((scheme) => lower.startsWith(scheme));
+  // Remove all non-printable control characters and trim
+  const cleaned = url.replace(/[\x00-\x1F\x7F-\x9F]/g, "").trim().toLowerCase();
+
+  if (cleaned.startsWith("data:")) {
+    // Parse MIME type from data URI (e.g., data:text/html;base64,...)
+    const mimePart = cleaned.substring(5).split(',')[0].split(';')[0].trim();
+    if (mimePart === "text/html" || mimePart.startsWith("application/")) {
+      return false;
+    }
+  }
+
+  return !UNSAFE_URL_SCHEMES.some((scheme) => cleaned.startsWith(scheme));
 }
 
 interface OutputAnalysis {
