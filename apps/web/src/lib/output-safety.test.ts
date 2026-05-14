@@ -178,12 +178,19 @@ describe("isSafeUrl", () => {
     expect(isSafeUrl("JAVASCRIPT:alert(1)")).toBe(false);
   });
 
+  it("blocks vbscript: URLs", () => {
+    expect(isSafeUrl("vbscript:msgbox(1)")).toBe(false);
+    expect(isSafeUrl("VBSCRIPT:msgbox(1)")).toBe(false);
+  });
+
   it("blocks data:text/html URLs", () => {
     expect(isSafeUrl("data:text/html,<script>alert(1)</script>")).toBe(false);
+    expect(isSafeUrl("data: text/html,<script>alert(1)</script>")).toBe(false);
   });
 
   it("blocks data:application URLs", () => {
     expect(isSafeUrl("data:application/javascript,alert(1)")).toBe(false);
+    expect(isSafeUrl("data: application/javascript,alert(1)")).toBe(false);
   });
 
   it("allows relative paths", () => {
@@ -192,6 +199,12 @@ describe("isSafeUrl", () => {
 
   it("trims whitespace", () => {
     expect(isSafeUrl("  javascript:alert(1)  ")).toBe(false);
+  });
+
+  it("strips control characters to prevent bypass", () => {
+    expect(isSafeUrl("\x01javascript:alert(1)")).toBe(false);
+    expect(isSafeUrl("java\x09script:alert(1)")).toBe(false); // Tab is a control character sometimes stripped, but \x09 is in \x00-\x1F
+    expect(isSafeUrl("\x00data:text/html;base64,PHNjcmlwdD4=")).toBe(false);
   });
 });
 
