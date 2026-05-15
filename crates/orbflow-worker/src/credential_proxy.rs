@@ -156,7 +156,8 @@ fn validate_proxy_url(url_str: &str) -> Result<(), OrbflowError> {
     // Must be HTTPS (except localhost for dev)
     if parsed.scheme() != "https" {
         let host = parsed.host_str().unwrap_or_default();
-        let is_localhost = parsed.scheme() == "http" && (host == "localhost" || host == "127.0.0.1" || host == "[::1]");
+        let is_localhost = parsed.scheme() == "http"
+            && (host == "localhost" || host == "127.0.0.1" || host == "[::1]");
         if !is_localhost {
             return Err(OrbflowError::InvalidNodeConfig(
                 "credential proxy only allows HTTPS URLs (or localhost for development)".into(),
