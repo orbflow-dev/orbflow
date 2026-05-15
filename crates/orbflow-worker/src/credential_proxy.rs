@@ -149,29 +149,73 @@ impl CredentialProxy {
 ///
 /// Enforces HTTPS (except localhost for development) and blocks
 /// known cloud metadata endpoints.
-fn validate_proxy_url(url: &str) -> Result<(), OrbflowError> {
+fn validate_proxy_url(url_str: &str) -> Result<(), OrbflowError> {
+    let parsed = url::Url::parse(url_str)
+        .map_err(|_| OrbflowError::InvalidNodeConfig(format!("invalid URL: {url_str}")))?;
+
     // Must be HTTPS (except localhost for dev)
-    if !url.starts_with("https://") {
-        let is_localhost =
-            url.starts_with("http://localhost") || url.starts_with("http://127.0.0.1");
+    if parsed.scheme() != "https" {
+        let host = parsed.host_str().unwrap_or_default();
+        let is_localhost = parsed.scheme() == "http" && (host == "localhost" || host == "127.0.0.1" || host == "[::1]");
         if !is_localhost {
             return Err(OrbflowError::InvalidNodeConfig(
                 "credential proxy only allows HTTPS URLs (or localhost for development)".into(),
             ));
         }
     }
-    // Block cloud metadata endpoints
+
+    // Block cloud metadata endpoints using exact host match
+    let host = parsed.host_str().unwrap_or_default().to_lowercase();
     let blocked = [
         "169.254.169.254",
         "metadata.google.internal",
         "100.100.100.200",
     ];
     for b in blocked {
-        if url.contains(b) {
+        if host == *b {
             return Err(OrbflowError::InvalidNodeConfig(format!(
                 "credential proxy blocked request to internal address: {b}"
             )));
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_proxy_url() {
+        // Allowed HTTPS URLs
+        assert!(validate_proxy_url("https://api.example.com").is_ok());
+        assert!(validate_proxy_url("https://api.github.com/v3").is_ok());
+        assert!(validate_proxy_url("https://10.0.0.1").is_ok()); // Note: only metadata IPs are blocked
+
+        // Allowed HTTP localhost URLs
+        assert!(validate_proxy_url("http://localhost").is_ok());
+        assert!(validate_proxy_url("http://localhost:8080").is_ok());
+        assert!(validate_proxy_url("http://127.0.0.1").is_ok());
+        assert!(validate_proxy_url("http://[::1]").is_ok());
+
+        // Blocked HTTP non-localhost URLs
+        assert!(validate_proxy_url("http://example.com").is_err());
+        assert!(validate_proxy_url("http://api.github.com").is_err());
+
+        // Blocked HTTP localhost bypasses
+        assert!(validate_proxy_url("http://localhost.evildomain.com").is_err());
+        assert!(validate_proxy_url("http://127.0.0.1.evildomain.com").is_err());
+
+        // Blocked metadata endpoints (SSRF)
+        assert!(validate_proxy_url("https://169.254.169.254").is_err());
+        assert!(validate_proxy_url("http://169.254.169.254").is_err());
+        assert!(validate_proxy_url("https://metadata.google.internal").is_err());
+        assert!(validate_proxy_url("https://100.100.100.200").is_err());
+
+        // Blocked metadata endpoints using basic auth bypass
+        assert!(validate_proxy_url("https://127.0.0.1@169.254.169.254").is_err());
+
+        // Blocked metadata endpoints using integer IP encoding (2852039166 == 169.254.169.254)
+        assert!(validate_proxy_url("https://2852039166").is_err());
+    }
 }

@@ -1,4 +1,4 @@
-## 2024-05-05 - [CRITICAL] Prevent Unicode-based homograph attacks in identifier validation
-**Vulnerability:** The application was using `char::is_alphanumeric()` to validate plugin names and repositories. This Rust method allows all Unicode alphanumeric characters, meaning names with Cyrillic or Greek characters could pass validation.
-**Learning:** `char::is_alphanumeric()` in Rust is not ASCII-restricted and can lead to homograph attacks, where an attacker registers a plugin with a visually identical name using non-ASCII characters.
-**Prevention:** Always use `char::is_ascii_alphanumeric()` when validating system identifiers, URLs, or file paths where you expect standard ASCII characters.
+## 2025-05-15 - [SSRF Bypass in Credential Proxy]
+**Vulnerability:** The `validate_proxy_url` function in `crates/orbflow-worker/src/credential_proxy.rs` was vulnerable to Server-Side Request Forgery (SSRF) bypasses due to string-based URL checks.
+**Learning:** Checking for prefixes like `http://localhost` allows bypasses like `http://localhost.evildomain.com`, while `contains` string matching for blocked metadata IPs allows bypasses using integer representation of IP addresses (like `2852039166` for `169.254.169.254`).
+**Prevention:** Always use a robust URL parsing library (`url::Url`) to extract the schema and the normalized host string, then enforce exact host matching, instead of relying on string containment.
