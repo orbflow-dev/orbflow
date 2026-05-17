@@ -148,24 +148,57 @@ impl CredentialProxy {
 /// Validates a proxy URL to prevent SSRF attacks.
 ///
 /// Enforces HTTPS (except localhost for development) and blocks
-/// known cloud metadata endpoints.
+/// known cloud metadata endpoints using robust URL parsing.
 fn validate_proxy_url(url: &str) -> Result<(), OrbflowError> {
+    let parsed = url::Url::parse(url).map_err(|_| {
+        OrbflowError::InvalidNodeConfig("invalid URL format for credential proxy".into())
+    })?;
+
     // Must be HTTPS (except localhost for dev)
-    if !url.starts_with("https://") {
-        let is_localhost =
-            url.starts_with("http://localhost") || url.starts_with("http://127.0.0.1");
-        if !is_localhost {
+    if parsed.scheme() != "https" {
+        let is_localhost = parsed.host_str() == Some("localhost")
+            || parsed.host_str() == Some("127.0.0.1")
+            || parsed.host_str() == Some("[::1]");
+
+        if parsed.scheme() != "http" || !is_localhost {
             return Err(OrbflowError::InvalidNodeConfig(
                 "credential proxy only allows HTTPS URLs (or localhost for development)".into(),
             ));
         }
     }
-    // Block cloud metadata endpoints
+
+    let host = parsed.host_str().unwrap_or_default().to_lowercase();
     let blocked = [
         "169.254.169.254",
         "metadata.google.internal",
+        "metadata.internal",
         "100.100.100.200",
     ];
+
+    if blocked.contains(&host.as_str()) {
+        return Err(OrbflowError::InvalidNodeConfig(format!(
+            "credential proxy blocked request to internal address: {host}"
+        )));
+    }
+
+    // Check parsed IPs to avoid obfuscation bypasses (e.g., integer IPs)
+    let ip_from_host = match parsed.host() {
+        Some(url::Host::Ipv4(v4)) => Some(std::net::IpAddr::V4(v4)),
+        Some(url::Host::Ipv6(v6)) => Some(std::net::IpAddr::V6(v6)),
+        _ => None,
+    };
+
+    if let Some(ip) = ip_from_host {
+        let ip_str = ip.to_string();
+        if blocked.contains(&ip_str.as_str()) {
+            return Err(OrbflowError::InvalidNodeConfig(format!(
+                "credential proxy blocked request to internal address: {ip_str}"
+            )));
+        }
+    }
+
+    // Defense-in-depth: Substring check as a fallback for domain-based bypasses
+    // (e.g., `169.254.169.254.nip.io` or embedded IPv4-mapped IPv6)
     for b in blocked {
         if url.contains(b) {
             return Err(OrbflowError::InvalidNodeConfig(format!(
@@ -173,5 +206,37 @@ fn validate_proxy_url(url: &str) -> Result<(), OrbflowError> {
             )));
         }
     }
+
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_proxy_url() {
+        // Allowed URLs
+        assert!(validate_proxy_url("https://api.github.com/v1").is_ok());
+        assert!(validate_proxy_url("http://localhost:8080/dev").is_ok());
+        assert!(validate_proxy_url("http://127.0.0.1:3000/api").is_ok());
+
+        // Blocked: Non-HTTPS (excluding localhost)
+        assert!(validate_proxy_url("http://example.com").is_err());
+        assert!(validate_proxy_url("ftp://example.com").is_err());
+
+        // Blocked: Known metadata domains
+        assert!(
+            validate_proxy_url("https://metadata.google.internal/computeMetadata/v1/").is_err()
+        );
+        assert!(validate_proxy_url("https://169.254.169.254/latest/meta-data/").is_err());
+
+        // Blocked: Obfuscation bypass attempts
+        assert!(validate_proxy_url("https://2852039166/").is_err()); // Integer IP for 169.254.169.254
+        assert!(validate_proxy_url("http://127.0.0.1.attacker.com").is_err()); // Prefix bypass
+
+        // Blocked: Substring fallback cases
+        assert!(validate_proxy_url("http://169.254.169.254.nip.io/").is_err());
+        assert!(validate_proxy_url("http://[::ffff:169.254.169.254]/").is_err());
+    }
 }
