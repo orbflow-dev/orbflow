@@ -226,7 +226,9 @@ mod tests {
         assert!(validate_proxy_url("ftp://example.com").is_err());
 
         // Blocked: Known metadata domains
-        assert!(validate_proxy_url("https://metadata.google.internal/computeMetadata/v1/").is_err());
+        assert!(
+            validate_proxy_url("https://metadata.google.internal/computeMetadata/v1/").is_err()
+        );
         assert!(validate_proxy_url("https://169.254.169.254/latest/meta-data/").is_err());
 
         // Blocked: Obfuscation bypass attempts
