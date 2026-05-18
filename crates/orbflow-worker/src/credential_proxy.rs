@@ -150,16 +150,23 @@ impl CredentialProxy {
 /// Enforces HTTPS (except localhost for development) and blocks
 /// known cloud metadata endpoints.
 fn validate_proxy_url(url: &str) -> Result<(), OrbflowError> {
+    let parsed = url::Url::parse(url).map_err(|_| {
+        OrbflowError::InvalidNodeConfig("credential proxy received invalid URL".into())
+    })?;
+
+    let scheme = parsed.scheme();
+    let host = parsed.host_str().unwrap_or("");
+
     // Must be HTTPS (except localhost for dev)
-    if !url.starts_with("https://") {
-        let is_localhost =
-            url.starts_with("http://localhost") || url.starts_with("http://127.0.0.1");
+    if scheme != "https" {
+        let is_localhost = scheme == "http" && (host == "localhost" || host == "127.0.0.1");
         if !is_localhost {
             return Err(OrbflowError::InvalidNodeConfig(
                 "credential proxy only allows HTTPS URLs (or localhost for development)".into(),
             ));
         }
     }
+
     // Block cloud metadata endpoints
     let blocked = [
         "169.254.169.254",
@@ -167,7 +174,8 @@ fn validate_proxy_url(url: &str) -> Result<(), OrbflowError> {
         "100.100.100.200",
     ];
     for b in blocked {
-        if url.contains(b) {
+        // Check both the raw url (defense in depth) and the parsed host (to prevent obfuscation bypasses)
+        if url.contains(b) || host.contains(b) {
             return Err(OrbflowError::InvalidNodeConfig(format!(
                 "credential proxy blocked request to internal address: {b}"
             )));
