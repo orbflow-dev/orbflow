@@ -16,6 +16,8 @@ use std::sync::Arc;
 use orbflow_core::OrbflowError;
 use orbflow_core::credential_proxy::{CapabilityRequest, CapabilityResponse};
 use orbflow_core::ports::CredentialStore;
+use orbflow_core::ssrf::{ALLOWED_SCHEMES, BLOCKED_HOSTNAMES, is_private_ip};
+use url::Url;
 
 /// Executes capability requests by injecting credentials into HTTP calls.
 ///
@@ -150,28 +152,70 @@ impl CredentialProxy {
 /// Enforces HTTPS (except localhost for development) and blocks
 /// known cloud metadata endpoints.
 fn validate_proxy_url(url: &str) -> Result<(), OrbflowError> {
-    // Must be HTTPS (except localhost for dev)
-    if !url.starts_with("https://") {
-        let is_localhost =
-            url.starts_with("http://localhost") || url.starts_with("http://127.0.0.1");
-        if !is_localhost {
-            return Err(OrbflowError::InvalidNodeConfig(
-                "credential proxy only allows HTTPS URLs (or localhost for development)".into(),
-            ));
+    let parsed = Url::parse(url).map_err(|_| {
+        OrbflowError::InvalidNodeConfig(format!("credential proxy invalid URL: {url}"))
+    })?;
+
+    let scheme = parsed.scheme();
+    if !ALLOWED_SCHEMES.contains(&scheme) {
+        return Err(OrbflowError::InvalidNodeConfig(format!(
+            "credential proxy unsupported URL scheme: {scheme}"
+        )));
+    }
+
+    let host = parsed.host_str().ok_or_else(|| {
+        OrbflowError::InvalidNodeConfig("credential proxy missing URL host".into())
+    })?;
+
+    let is_localhost = host == "localhost" || host == "127.0.0.1" || host == "[::1]";
+
+    // Only allow HTTP for localhost
+    if scheme == "http" && !is_localhost {
+        return Err(OrbflowError::InvalidNodeConfig(
+            "credential proxy only allows HTTPS URLs (or localhost for development)".into(),
+        ));
+    }
+
+    for b in BLOCKED_HOSTNAMES {
+        if host.eq_ignore_ascii_case(b) || url.contains(b) {
+            return Err(OrbflowError::InvalidNodeConfig(format!(
+                "credential proxy blocked request to internal address: {b}"
+            )));
         }
     }
-    // Block cloud metadata endpoints
-    let blocked = [
+
+    if let Ok(ip) = host
+        .trim_matches(|c| c == '[' || c == ']')
+        .parse::<std::net::IpAddr>()
+    {
+        // We only allow localhost IPs. Any other private IP is blocked.
+        if let Some(reason) = is_private_ip(&ip, true) {
+            // If it's a loopback IP, we already verified `is_localhost` above (which is fine).
+            // But if it's some other private IP, it'll fail here.
+            // Wait, is_private_ip with allow_localhost=true returns None for loopback.
+            // So if it returns Some(reason), it is a private IP but NOT loopback.
+            return Err(OrbflowError::InvalidNodeConfig(format!(
+                "credential proxy blocked request to internal address: {reason}"
+            )));
+        }
+    }
+
+    // Substring fallback check for domain-based IP resolution bypasses (like .nip.io)
+    // and IP addresses hidden in URLs that `Url::parse` might not catch depending on the parser.
+    let blocked_substr_strict = [
         "169.254.169.254",
         "metadata.google.internal",
         "100.100.100.200",
+        ".nip.io",
+        ".sslip.io",
     ];
-    for b in blocked {
+    for b in blocked_substr_strict {
         if url.contains(b) {
             return Err(OrbflowError::InvalidNodeConfig(format!(
                 "credential proxy blocked request to internal address: {b}"
             )));
         }
     }
+
     Ok(())
 }
