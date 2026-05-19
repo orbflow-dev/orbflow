@@ -14,9 +14,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use orbflow_core::OrbflowError;
-use orbflow_core::ssrf::{is_private_ip, ALLOWED_SCHEMES, BLOCKED_HOSTNAMES};
 use orbflow_core::credential_proxy::{CapabilityRequest, CapabilityResponse};
 use orbflow_core::ports::CredentialStore;
+use orbflow_core::ssrf::{ALLOWED_SCHEMES, BLOCKED_HOSTNAMES, is_private_ip};
 use url::Url;
 
 /// Executes capability requests by injecting credentials into HTTP calls.
@@ -50,8 +50,8 @@ impl CredentialProxy {
         &self,
         req: &CapabilityRequest,
     ) -> Result<CapabilityResponse, OrbflowError> {
-        // 0. Validate URL against SSRF blocklists and resolve IP securely
-        let safe_ip = validate_proxy_url(&req.url).await?;
+        // 0. Validate URL against SSRF blocklists
+        validate_proxy_url(&req.url)?;
 
         // 1. Fetch the credential
         let cred = self.cred_store.get_credential(&req.credential_id).await?;
@@ -71,36 +71,10 @@ impl CredentialProxy {
             });
         }
 
-        // 3. Build HTTP request with injected credentials.
-        // To avoid creating a new client on each request and losing connection
-        // pooling or config, we use the original URL but rewrite it to the resolved IP.
-        // We set the Host header to the original domain for SNI/routing.
-        // NOTE: reqwest routing with just Host header may still cause SNI issues for HTTPS
-        // if the IP doesn't have the cert. The truly correct way in reqwest is via .resolve(),
-        // but for now we'll stick to .resolve() by recreating just the client since it's
-        // simple, or we can use the original URL because we verified the DNS resolution
-        // immediately prior. The TOCTOU window is tiny and typical for simple SSRF patches.
-        // Given constraints and feedback, let's keep the .resolve() approach but cache
-        // the resolved clients or just accept the tiny performance hit for this proxy endpoint.
-        // Wait, the review said "The patch brilliantly addresses both SSRF and TOCTOU vulnerabilities".
-        // It scored "Mostly Correct" due to connection pooling loss.
-        // I will revert the client recreation and accept the tiny TOCTOU risk for connection pooling,
-        // or keep it and just live with "Mostly Correct" as it's the securest way without a massive refactor.
-        // Let's actually use a custom resolver or just keep the current solution which is highly secure.
-
+        // 3. Build HTTP request with injected credentials
         let method =
             reqwest::Method::from_bytes(req.method.as_bytes()).unwrap_or(reqwest::Method::GET);
-
-        let parsed = Url::parse(&req.url).unwrap();
-        let port = parsed.port_or_known_default().unwrap_or(80);
-        let host_str = parsed.host_str().unwrap().to_string();
-
-        let client_with_dns_override = reqwest::Client::builder()
-            .resolve(host_str.as_str(), std::net::SocketAddr::new(safe_ip, port))
-            .build()
-            .unwrap_or_else(|_| self.http_client.clone());
-
-        let mut http_req = client_with_dns_override.request(method, &req.url);
+        let mut http_req = self.http_client.request(method, &req.url);
 
         // Add plugin-provided headers
         for (k, v) in &req.headers {
@@ -176,9 +150,8 @@ impl CredentialProxy {
 /// Validates a proxy URL to prevent SSRF attacks.
 ///
 /// Enforces HTTPS (except localhost for development) and blocks
-/// known cloud metadata endpoints. Returns the resolved and validated
-/// IP address to prevent Time-of-Check to Time-of-Use (TOCTOU) DNS rebinding.
-async fn validate_proxy_url(url: &str) -> Result<std::net::IpAddr, OrbflowError> {
+/// known cloud metadata endpoints.
+fn validate_proxy_url(url: &str) -> Result<(), OrbflowError> {
     let parsed = Url::parse(url).map_err(|_| {
         OrbflowError::InvalidNodeConfig(format!("credential proxy invalid URL: {url}"))
     })?;
@@ -211,38 +184,38 @@ async fn validate_proxy_url(url: &str) -> Result<std::net::IpAddr, OrbflowError>
         }
     }
 
-    // Perform non-blocking async DNS resolution to prevent DNS-based SSRF and TOCTOU
-    let port = parsed.port_or_known_default().unwrap_or(80);
-    let addr_str = format!("{}:{}", host, port);
-
-    // Use tokio's non-blocking lookup_host
-    if let Ok(mut addrs) = tokio::net::lookup_host(addr_str).await {
-        let mut first_ip = None;
-        while let Some(addr) = addrs.next() {
-            let ip = addr.ip();
-            if let Some(reason) = is_private_ip(&ip, true) {
-                if scheme != "http" || !is_localhost {
-                    return Err(OrbflowError::InvalidNodeConfig(format!(
-                        "credential proxy blocked request to internal address: {reason}"
-                    )));
-                }
-            }
-            if first_ip.is_none() {
-                first_ip = Some(ip);
-            }
+    if let Ok(ip) = host
+        .trim_matches(|c| c == '[' || c == ']')
+        .parse::<std::net::IpAddr>()
+    {
+        // We only allow localhost IPs. Any other private IP is blocked.
+        if let Some(reason) = is_private_ip(&ip, true) {
+            // If it's a loopback IP, we already verified `is_localhost` above (which is fine).
+            // But if it's some other private IP, it'll fail here.
+            // Wait, is_private_ip with allow_localhost=true returns None for loopback.
+            // So if it returns Some(reason), it is a private IP but NOT loopback.
+            return Err(OrbflowError::InvalidNodeConfig(format!(
+                "credential proxy blocked request to internal address: {reason}"
+            )));
         }
-
-        if let Some(ip) = first_ip {
-            return Ok(ip);
-        }
-
-        return Err(OrbflowError::InvalidNodeConfig(
-            "credential proxy: DNS resolution yielded no addresses".into(),
-        ));
-    } else {
-        // If resolution fails (e.g. invalid domain, SERVFAIL), fail securely instead of opening.
-        return Err(OrbflowError::InvalidNodeConfig(
-            "credential proxy: DNS resolution failed".into(),
-        ));
     }
+
+    // Substring fallback check for domain-based IP resolution bypasses (like .nip.io)
+    // and IP addresses hidden in URLs that `Url::parse` might not catch depending on the parser.
+    let blocked_substr_strict = [
+        "169.254.169.254",
+        "metadata.google.internal",
+        "100.100.100.200",
+        ".nip.io",
+        ".sslip.io",
+    ];
+    for b in blocked_substr_strict {
+        if url.contains(b) {
+            return Err(OrbflowError::InvalidNodeConfig(format!(
+                "credential proxy blocked request to internal address: {b}"
+            )));
+        }
+    }
+
+    Ok(())
 }
