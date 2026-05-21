@@ -5,6 +5,7 @@ import type { PluginDetail as PluginDetailType } from "@orbflow/core/types";
 import { NodeIcon } from "@/core";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { isSafeUrl } from "@/lib/output-safety";
 
 const CAT_GRADIENT: Record<string, string> = {
   ai: "from-violet-500/20 to-purple-500/10",
@@ -163,19 +164,28 @@ function DetailContent({
         {plugin.repository && (
           <div>
             <SectionTitle>Repository</SectionTitle>
-            <a
-              href={plugin.repository}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 text-sm text-electric-indigo
-                hover:text-electric-indigo/80 transition-colors group"
-            >
-              <NodeIcon name="link" className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
-              <span className="truncate underline underline-offset-2 decoration-electric-indigo/30
-                group-hover:decoration-electric-indigo/60">
-                {plugin.repository.replace(/^https?:\/\//, "")}
+            {isSafeUrl(plugin.repository) ? (
+              <a
+                href={plugin.repository}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 text-sm text-electric-indigo
+                  hover:text-electric-indigo/80 transition-colors group"
+              >
+                <NodeIcon name="link" className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
+                <span className="truncate underline underline-offset-2 decoration-electric-indigo/30
+                  group-hover:decoration-electric-indigo/60">
+                  {plugin.repository.replace(/^https?:\/\//, "")}
+                </span>
+              </a>
+            ) : (
+              <span className="inline-flex items-center gap-2 text-sm text-orbflow-text-secondary">
+                <NodeIcon name="link" className="w-3.5 h-3.5" />
+                <span className="truncate">
+                  {plugin.repository.replace(/^https?:\/\//, "")}
+                </span>
               </span>
-            </a>
+            )}
           </div>
         )}
 
