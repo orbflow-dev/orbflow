@@ -30,9 +30,7 @@ pub struct CredentialProxy {
 impl CredentialProxy {
     /// Creates a new proxy backed by the given credential store.
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
-        Self {
-            cred_store,
-        }
+        Self { cred_store }
     }
 
     /// Handle a capability request from a plugin/MCP server.
@@ -153,7 +151,8 @@ async fn validate_proxy_url(url_str: &str) -> Result<reqwest::Client, OrbflowErr
         .map_err(|_| OrbflowError::InvalidNodeConfig(format!("invalid URL: {url_str}")))?;
 
     if parsed.scheme() != "https" {
-        let is_localhost = parsed.host_str() == Some("localhost") || parsed.host_str() == Some("127.0.0.1");
+        let is_localhost =
+            parsed.host_str() == Some("localhost") || parsed.host_str() == Some("127.0.0.1");
         if !is_localhost {
             return Err(OrbflowError::InvalidNodeConfig(
                 "credential proxy only allows HTTPS URLs (or localhost for development)".into(),
@@ -186,7 +185,8 @@ async fn validate_proxy_url(url_str: &str) -> Result<reqwest::Client, OrbflowErr
     for addr in addrs {
         if let Some(reason) = orbflow_core::ssrf::is_private_ip(&addr.ip(), true) {
             return Err(OrbflowError::InvalidNodeConfig(format!(
-                "credential proxy blocked request to internal address ({reason}): {}", addr.ip()
+                "credential proxy blocked request to internal address ({reason}): {}",
+                addr.ip()
             )));
         }
         safe_addrs.push(addr);
