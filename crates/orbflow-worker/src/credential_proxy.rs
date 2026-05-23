@@ -25,16 +25,12 @@ use orbflow_core::ports::CredentialStore;
 /// sanitized before being returned to the caller.
 pub struct CredentialProxy {
     cred_store: Arc<dyn CredentialStore>,
-    http_client: reqwest::Client,
 }
 
 impl CredentialProxy {
     /// Creates a new proxy backed by the given credential store.
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
-        Self {
-            cred_store,
-            http_client: reqwest::Client::new(),
-        }
+        Self { cred_store }
     }
 
     /// Handle a capability request from a plugin/MCP server.
@@ -49,7 +45,7 @@ impl CredentialProxy {
         req: &CapabilityRequest,
     ) -> Result<CapabilityResponse, OrbflowError> {
         // 0. Validate URL against SSRF blocklists
-        validate_proxy_url(&req.url)?;
+        let http_client = validate_proxy_url(&req.url).await?;
 
         // 1. Fetch the credential
         let cred = self.cred_store.get_credential(&req.credential_id).await?;
@@ -72,7 +68,7 @@ impl CredentialProxy {
         // 3. Build HTTP request with injected credentials
         let method =
             reqwest::Method::from_bytes(req.method.as_bytes()).unwrap_or(reqwest::Method::GET);
-        let mut http_req = self.http_client.request(method, &req.url);
+        let mut http_req = http_client.request(method, &req.url);
 
         // Add plugin-provided headers
         for (k, v) in &req.headers {
@@ -148,30 +144,66 @@ impl CredentialProxy {
 /// Validates a proxy URL to prevent SSRF attacks.
 ///
 /// Enforces HTTPS (except localhost for development) and blocks
-/// known cloud metadata endpoints.
-fn validate_proxy_url(url: &str) -> Result<(), OrbflowError> {
-    // Must be HTTPS (except localhost for dev)
-    if !url.starts_with("https://") {
+/// known cloud metadata endpoints, performing asynchronous DNS resolution
+/// and pinning the validated IP to the returned reqwest Client.
+async fn validate_proxy_url(url_str: &str) -> Result<reqwest::Client, OrbflowError> {
+    let parsed = url::Url::parse(url_str)
+        .map_err(|_| OrbflowError::InvalidNodeConfig(format!("invalid URL: {url_str}")))?;
+
+    if parsed.scheme() != "https" {
         let is_localhost =
-            url.starts_with("http://localhost") || url.starts_with("http://127.0.0.1");
+            parsed.host_str() == Some("localhost") || parsed.host_str() == Some("127.0.0.1");
         if !is_localhost {
             return Err(OrbflowError::InvalidNodeConfig(
                 "credential proxy only allows HTTPS URLs (or localhost for development)".into(),
             ));
         }
     }
-    // Block cloud metadata endpoints
-    let blocked = [
-        "169.254.169.254",
-        "metadata.google.internal",
-        "100.100.100.200",
-    ];
-    for b in blocked {
-        if url.contains(b) {
+
+    let host = parsed
+        .host_str()
+        .filter(|h| !h.is_empty())
+        .ok_or_else(|| OrbflowError::InvalidNodeConfig(format!("URL has no host: {url_str}")))?;
+
+    // Check known blocked hostnames statically
+    let lower = host.to_lowercase();
+    if orbflow_core::ssrf::BLOCKED_HOSTNAMES.contains(&lower.as_str()) {
+        return Err(OrbflowError::InvalidNodeConfig(
+            "URL points to cloud metadata endpoint".into(),
+        ));
+    }
+
+    // Resolve IP addresses
+    let port = parsed.port_or_known_default().unwrap_or(443);
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host(format!("{}:{}", host, port))
+        .await
+        .map_err(|e| OrbflowError::InvalidNodeConfig(format!("DNS resolution failed: {e}")))?
+        .collect();
+
+    // Check each resolved IP and retain only non-private ones
+    let mut safe_addrs = Vec::new();
+    for addr in addrs {
+        if let Some(reason) = orbflow_core::ssrf::is_private_ip(&addr.ip(), true) {
             return Err(OrbflowError::InvalidNodeConfig(format!(
-                "credential proxy blocked request to internal address: {b}"
+                "credential proxy blocked request to internal address ({reason}): {}",
+                addr.ip()
             )));
         }
+        safe_addrs.push(addr);
     }
-    Ok(())
+
+    if safe_addrs.is_empty() {
+        return Err(OrbflowError::InvalidNodeConfig(
+            "all resolved addresses are private/internal (SSRF protection)".into(),
+        ));
+    }
+
+    // Build the reqwest client pinning the first validated IP
+    let client = reqwest::Client::builder()
+        .resolve(host, safe_addrs[0])
+        .redirect(reqwest::redirect::Policy::none()) // Prevent SSRF bypass via redirects
+        .build()
+        .map_err(|e| OrbflowError::Internal(format!("failed to build reqwest client: {e}")))?;
+
+    Ok(client)
 }
