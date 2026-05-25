@@ -33,7 +33,7 @@
   },
   "devDependencies": {
     "@types/dagre": "^0.7.54",
-    "@types/react": "^19.0.0",
+    "@types/react": "^19.2.15",
     "typescript": "^5.7.0",
     "vitest": "^3.2.1"
   },
