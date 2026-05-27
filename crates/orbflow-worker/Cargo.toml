@@ -17,6 +17,7 @@ reqwest = { workspace = true }
 thiserror = { workspace = true }
 opentelemetry = { workspace = true }
 tracing-opentelemetry = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 orbflow-testutil = { workspace = true }

@@ -25,16 +25,12 @@ use orbflow_core::ports::CredentialStore;
 /// sanitized before being returned to the caller.
 pub struct CredentialProxy {
     cred_store: Arc<dyn CredentialStore>,
-    http_client: reqwest::Client,
 }
 
 impl CredentialProxy {
     /// Creates a new proxy backed by the given credential store.
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
-        Self {
-            cred_store,
-            http_client: reqwest::Client::new(),
-        }
+        Self { cred_store }
     }
 
     /// Handle a capability request from a plugin/MCP server.
@@ -49,7 +45,7 @@ impl CredentialProxy {
         req: &CapabilityRequest,
     ) -> Result<CapabilityResponse, OrbflowError> {
         // 0. Validate URL against SSRF blocklists
-        validate_proxy_url(&req.url)?;
+        let (resolved_ip, parsed_url) = validate_proxy_url(&req.url).await?;
 
         // 1. Fetch the credential
         let cred = self.cred_store.get_credential(&req.credential_id).await?;
@@ -70,9 +66,26 @@ impl CredentialProxy {
         }
 
         // 3. Build HTTP request with injected credentials
+        let mut client_builder = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(30));
+
+        if let Some(ip) = resolved_ip
+            && let Some(host) = parsed_url.host_str()
+        {
+            client_builder = client_builder.resolve(
+                host,
+                std::net::SocketAddr::new(ip, parsed_url.port_or_known_default().unwrap_or(443)),
+            );
+        }
+
+        let client = client_builder
+            .build()
+            .map_err(|e| OrbflowError::Internal(format!("failed to build HTTP client: {e}")))?;
+
         let method =
             reqwest::Method::from_bytes(req.method.as_bytes()).unwrap_or(reqwest::Method::GET);
-        let mut http_req = self.http_client.request(method, &req.url);
+        let mut http_req = client.request(method, parsed_url);
 
         // Add plugin-provided headers
         for (k, v) in &req.headers {
@@ -101,7 +114,6 @@ impl CredentialProxy {
 
         // 4. Execute the request
         let response = http_req
-            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| OrbflowError::Internal(format!("credential proxy HTTP error: {e}")))?;
@@ -149,29 +161,61 @@ impl CredentialProxy {
 ///
 /// Enforces HTTPS (except localhost for development) and blocks
 /// known cloud metadata endpoints.
-fn validate_proxy_url(url: &str) -> Result<(), OrbflowError> {
+async fn validate_proxy_url(
+    url_str: &str,
+) -> Result<(Option<std::net::IpAddr>, url::Url), OrbflowError> {
+    let parsed = url::Url::parse(url_str)
+        .map_err(|_| OrbflowError::InvalidNodeConfig(format!("invalid URL: {url_str}")))?;
+
     // Must be HTTPS (except localhost for dev)
-    if !url.starts_with("https://") {
-        let is_localhost =
-            url.starts_with("http://localhost") || url.starts_with("http://127.0.0.1");
-        if !is_localhost {
-            return Err(OrbflowError::InvalidNodeConfig(
-                "credential proxy only allows HTTPS URLs (or localhost for development)".into(),
-            ));
-        }
+    let is_localhost_dev =
+        parsed.host_str() == Some("localhost") || parsed.host_str() == Some("127.0.0.1");
+    if parsed.scheme() != "https" && !is_localhost_dev {
+        return Err(OrbflowError::InvalidNodeConfig(
+            "credential proxy only allows HTTPS URLs (or localhost for development)".into(),
+        ));
     }
-    // Block cloud metadata endpoints
-    let blocked = [
-        "169.254.169.254",
-        "metadata.google.internal",
-        "100.100.100.200",
-    ];
-    for b in blocked {
-        if url.contains(b) {
+
+    let host_str = parsed
+        .host_str()
+        .ok_or_else(|| OrbflowError::InvalidNodeConfig("URL must have a host".into()))?;
+
+    // Check known blocked hostnames immediately
+    let lower_host = host_str.to_lowercase();
+    if orbflow_core::ssrf::BLOCKED_HOSTNAMES.contains(&lower_host.as_str()) {
+        return Err(OrbflowError::InvalidNodeConfig(
+            "credential proxy blocked request to internal address".into(),
+        ));
+    }
+
+    // Resolve host
+    let port = parsed.port_or_known_default().unwrap_or(443);
+    let addrs: Vec<std::net::SocketAddr> =
+        tokio::net::lookup_host(format!("{}:{}", host_str, port))
+            .await
+            .map_err(|e| OrbflowError::InvalidNodeConfig(format!("DNS resolution failed: {e}")))?
+            .collect();
+
+    if addrs.is_empty() {
+        return Err(OrbflowError::InvalidNodeConfig(
+            "DNS resolution returned no addresses".into(),
+        ));
+    }
+
+    // Validate each IP and select the first safe one
+    let mut safe_ip = None;
+    for addr in addrs {
+        let ip = addr.ip();
+        // Allow localhost loopback in development, but it shouldn't hit production
+        if let Some(reason) = orbflow_core::ssrf::is_private_ip(&ip, is_localhost_dev) {
             return Err(OrbflowError::InvalidNodeConfig(format!(
-                "credential proxy blocked request to internal address: {b}"
+                "credential proxy blocked request to {reason}: {ip}"
             )));
         }
+        if safe_ip.is_none() {
+            safe_ip = Some(ip);
+        }
     }
-    Ok(())
+
+    Ok((safe_ip, parsed))
 }
