@@ -70,16 +70,13 @@ impl CredentialProxy {
             .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(30));
 
-        if let Some(ip) = resolved_ip {
-            if let Some(host) = parsed_url.host_str() {
-                client_builder = client_builder.resolve(
-                    host,
-                    std::net::SocketAddr::new(
-                        ip,
-                        parsed_url.port_or_known_default().unwrap_or(443),
-                    ),
-                );
-            }
+        if let Some(ip) = resolved_ip
+            && let Some(host) = parsed_url.host_str()
+        {
+            client_builder = client_builder.resolve(
+                host,
+                std::net::SocketAddr::new(ip, parsed_url.port_or_known_default().unwrap_or(443)),
+            );
         }
 
         let client = client_builder
@@ -173,12 +170,10 @@ async fn validate_proxy_url(
     // Must be HTTPS (except localhost for dev)
     let is_localhost_dev =
         parsed.host_str() == Some("localhost") || parsed.host_str() == Some("127.0.0.1");
-    if parsed.scheme() != "https" {
-        if !is_localhost_dev {
-            return Err(OrbflowError::InvalidNodeConfig(
-                "credential proxy only allows HTTPS URLs (or localhost for development)".into(),
-            ));
-        }
+    if parsed.scheme() != "https" && !is_localhost_dev {
+        return Err(OrbflowError::InvalidNodeConfig(
+            "credential proxy only allows HTTPS URLs (or localhost for development)".into(),
+        ));
     }
 
     let host_str = parsed
