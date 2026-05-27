@@ -72,7 +72,13 @@ impl CredentialProxy {
 
         if let Some(ip) = resolved_ip {
             if let Some(host) = parsed_url.host_str() {
-                client_builder = client_builder.resolve(host, std::net::SocketAddr::new(ip, parsed_url.port_or_known_default().unwrap_or(443)));
+                client_builder = client_builder.resolve(
+                    host,
+                    std::net::SocketAddr::new(
+                        ip,
+                        parsed_url.port_or_known_default().unwrap_or(443),
+                    ),
+                );
             }
         }
 
@@ -158,12 +164,15 @@ impl CredentialProxy {
 ///
 /// Enforces HTTPS (except localhost for development) and blocks
 /// known cloud metadata endpoints.
-async fn validate_proxy_url(url_str: &str) -> Result<(Option<std::net::IpAddr>, url::Url), OrbflowError> {
+async fn validate_proxy_url(
+    url_str: &str,
+) -> Result<(Option<std::net::IpAddr>, url::Url), OrbflowError> {
     let parsed = url::Url::parse(url_str)
         .map_err(|_| OrbflowError::InvalidNodeConfig(format!("invalid URL: {url_str}")))?;
 
     // Must be HTTPS (except localhost for dev)
-    let is_localhost_dev = parsed.host_str() == Some("localhost") || parsed.host_str() == Some("127.0.0.1");
+    let is_localhost_dev =
+        parsed.host_str() == Some("localhost") || parsed.host_str() == Some("127.0.0.1");
     if parsed.scheme() != "https" {
         if !is_localhost_dev {
             return Err(OrbflowError::InvalidNodeConfig(
@@ -172,9 +181,9 @@ async fn validate_proxy_url(url_str: &str) -> Result<(Option<std::net::IpAddr>, 
         }
     }
 
-    let host_str = parsed.host_str().ok_or_else(|| {
-        OrbflowError::InvalidNodeConfig("URL must have a host".into())
-    })?;
+    let host_str = parsed
+        .host_str()
+        .ok_or_else(|| OrbflowError::InvalidNodeConfig("URL must have a host".into()))?;
 
     // Check known blocked hostnames immediately
     let lower_host = host_str.to_lowercase();
@@ -186,10 +195,11 @@ async fn validate_proxy_url(url_str: &str) -> Result<(Option<std::net::IpAddr>, 
 
     // Resolve host
     let port = parsed.port_or_known_default().unwrap_or(443);
-    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host(format!("{}:{}", host_str, port))
-        .await
-        .map_err(|e| OrbflowError::InvalidNodeConfig(format!("DNS resolution failed: {e}")))?
-        .collect();
+    let addrs: Vec<std::net::SocketAddr> =
+        tokio::net::lookup_host(format!("{}:{}", host_str, port))
+            .await
+            .map_err(|e| OrbflowError::InvalidNodeConfig(format!("DNS resolution failed: {e}")))?
+            .collect();
 
     if addrs.is_empty() {
         return Err(OrbflowError::InvalidNodeConfig(
