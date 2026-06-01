@@ -195,8 +195,10 @@ impl InstanceStore for MemStore {
 
     async fn update_instance(&self, inst: &Instance) -> Result<(), OrbflowError> {
         let mut map = self.instances.write().await;
-        if !map.contains_key(&inst.id) {
-            return Err(OrbflowError::NotFound);
+        let current = map.get(&inst.id).ok_or(OrbflowError::NotFound)?;
+        let prev_version = inst.version - 1;
+        if current.version != prev_version {
+            return Err(OrbflowError::Conflict);
         }
         let cloned = deep_clone(inst)?;
         map.insert(cloned.id.clone(), cloned);
@@ -285,15 +287,11 @@ impl EventStore for MemStore {
             None => return Ok(Vec::new()),
         };
 
-        if after_version <= 0 {
-            return Ok(events.clone());
-        }
-
-        let start = after_version as usize;
-        if start >= events.len() {
-            return Ok(Vec::new());
-        }
-        Ok(events[start..].to_vec())
+        Ok(events
+            .iter()
+            .filter(|event| event.version() > after_version)
+            .cloned()
+            .collect())
     }
 
     async fn save_snapshot(&self, inst: &Instance) -> Result<(), OrbflowError> {
@@ -343,6 +341,21 @@ impl CredentialStore for MemStore {
         Ok(cred.clone())
     }
 
+    async fn get_credential_for_owner(
+        &self,
+        id: &CredentialId,
+        owner_id: Option<&str>,
+    ) -> Result<Credential, OrbflowError> {
+        let map = self.credentials.read().await;
+        let cred = map.get(id).ok_or(OrbflowError::NotFound)?;
+        if let Some(oid) = owner_id
+            && cred.owner_id.as_deref() != Some(oid)
+        {
+            return Err(OrbflowError::NotFound);
+        }
+        Ok(cred.clone())
+    }
+
     async fn update_credential(&self, cred: &Credential) -> Result<(), OrbflowError> {
         let mut map = self.credentials.write().await;
         if !map.contains_key(&cred.id) {
@@ -376,6 +389,19 @@ impl CredentialStore for MemStore {
     async fn list_credentials(&self) -> Result<Vec<CredentialSummary>, OrbflowError> {
         let map = self.credentials.read().await;
         let summaries: Vec<CredentialSummary> = map.values().map(CredentialSummary::from).collect();
+        Ok(summaries)
+    }
+
+    async fn list_credentials_for_owner(
+        &self,
+        owner_id: Option<&str>,
+    ) -> Result<Vec<CredentialSummary>, OrbflowError> {
+        let map = self.credentials.read().await;
+        let summaries: Vec<CredentialSummary> = map
+            .values()
+            .filter(|cred| cred.owner_id.as_deref() == owner_id)
+            .map(CredentialSummary::from)
+            .collect();
         Ok(summaries)
     }
 }
@@ -734,6 +760,7 @@ mod tests {
         store.create_instance(&inst).await.unwrap();
 
         inst.status = InstanceStatus::Running;
+        inst.version += 1;
         store.update_instance(&inst).await.unwrap();
 
         let fetched = store.get_instance(&inst.id).await.unwrap();

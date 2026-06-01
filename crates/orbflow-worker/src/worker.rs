@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use orbflow_core::metering;
 use orbflow_core::streaming::{StreamChunk, StreamMessage, StreamSender, StreamingNodeExecutor};
+use orbflow_core::wire::dispatch_identity;
 use orbflow_core::{
     Bus, NodeExecutor, NodeInput, NodeOutput, OrbflowError, ResultMessage, TaskMessage,
     WIRE_VERSION, result_subject, stream_subject, task_subject,
@@ -200,16 +201,20 @@ async fn handle_task(
     };
 
     // Reject tasks from newer, unknown wire versions to prevent silent
-    // behavior divergence during rolling deployments.
+    // behavior divergence during rolling deployments. Return an error so the
+    // bus leaves the task available for a worker that understands that version.
     if task.v > WIRE_VERSION {
         tracing::warn!(
             v = task.v,
             current = WIRE_VERSION,
             instance = %task.instance_id,
             node = %task.node_id,
-            "ignoring task with unknown wire version"
+            "rejecting task with unknown wire version"
         );
-        return Ok(());
+        return Err(OrbflowError::Internal(format!(
+            "task wire version {} is newer than supported version {WIRE_VERSION}",
+            task.v
+        )));
     }
 
     info!(
@@ -260,6 +265,7 @@ async fn handle_task(
     let TaskMessage {
         instance_id,
         node_id,
+        dispatch_id,
         plugin_ref,
         config,
         input: task_input,
@@ -269,6 +275,8 @@ async fn handle_task(
         trace_context: _,
         v: _,
     } = task;
+    let dispatch_id =
+        dispatch_id.or_else(|| Some(dispatch_identity(&instance_id, &node_id, attempt)));
 
     let input = NodeInput {
         instance_id,
@@ -284,8 +292,15 @@ async fn handle_task(
     // Check if this executor supports streaming.
     // The streaming handler creates its own span, so we don't enter ours here.
     if let Some(streaming_exec) = streaming_exec {
-        return handle_streaming_task(&streaming_exec, &input, bus, result_subject, task_timeout)
-            .await;
+        return handle_streaming_task(
+            &streaming_exec,
+            &input,
+            dispatch_id,
+            bus,
+            result_subject,
+            task_timeout,
+        )
+        .await;
     }
 
     // Non-streaming path: execute and publish result.
@@ -303,7 +318,7 @@ async fn handle_task(
             .await
     };
     let wall_time_ms = exec_start.elapsed().as_millis() as u64;
-    let result = build_result_message(&input, exec_result, wall_time_ms);
+    let result = build_result_message(&input, dispatch_id, exec_result, wall_time_ms);
 
     let duration = exec_start.elapsed();
     span.in_scope(|| {
@@ -327,6 +342,7 @@ async fn handle_task(
 async fn handle_streaming_task(
     streaming_exec: &Arc<dyn StreamingNodeExecutor>,
     input: &NodeInput,
+    dispatch_id: Option<String>,
     bus: &dyn Bus,
     result_subject: &str,
     task_timeout: Duration,
@@ -418,6 +434,8 @@ async fn handle_streaming_task(
             result_id: Some(uuid::Uuid::new_v4().to_string()),
             instance_id: input.instance_id.clone(),
             node_id: input.node_id.clone(),
+            attempt: input.attempt,
+            dispatch_id,
             output: inject_metrics(None, wall_time_ms),
             error: Some(err),
             trace_context: None,
@@ -429,6 +447,8 @@ async fn handle_streaming_task(
                 result_id: Some(uuid::Uuid::new_v4().to_string()),
                 instance_id: input.instance_id.clone(),
                 node_id: input.node_id.clone(),
+                attempt: input.attempt,
+                dispatch_id,
                 output: inject_metrics(output.data, wall_time_ms),
                 error: Some(err_msg.clone()),
                 trace_context: None,
@@ -439,6 +459,8 @@ async fn handle_streaming_task(
                 result_id: Some(uuid::Uuid::new_v4().to_string()),
                 instance_id: input.instance_id.clone(),
                 node_id: input.node_id.clone(),
+                attempt: input.attempt,
+                dispatch_id,
                 output: inject_metrics(output.data, wall_time_ms),
                 error: None,
                 trace_context: None,
@@ -450,6 +472,8 @@ async fn handle_streaming_task(
             result_id: Some(uuid::Uuid::new_v4().to_string()),
             instance_id: input.instance_id.clone(),
             node_id: input.node_id.clone(),
+            attempt: input.attempt,
+            dispatch_id,
             output: inject_metrics(None, wall_time_ms),
             error: Some("streaming executor did not send terminal chunk".into()),
             trace_context: None,
@@ -489,6 +513,7 @@ fn inject_metrics(
 /// Builds a [`ResultMessage`] from the input and execution result.
 fn build_result_message(
     input: &NodeInput,
+    dispatch_id: Option<String>,
     exec_result: Result<NodeOutput, OrbflowError>,
     wall_time_ms: u64,
 ) -> ResultMessage {
@@ -501,6 +526,8 @@ fn build_result_message(
                     result_id: Some(uuid::Uuid::new_v4().to_string()),
                     instance_id: input.instance_id.clone(),
                     node_id: input.node_id.clone(),
+                    attempt: input.attempt,
+                    dispatch_id,
                     output: inject_metrics(output.data, wall_time_ms),
                     error: Some(err_msg.clone()),
                     trace_context: None,
@@ -511,6 +538,8 @@ fn build_result_message(
                     result_id: Some(uuid::Uuid::new_v4().to_string()),
                     instance_id: input.instance_id.clone(),
                     node_id: input.node_id.clone(),
+                    attempt: input.attempt,
+                    dispatch_id,
                     output: inject_metrics(output.data, wall_time_ms),
                     error: None,
                     trace_context: None,
@@ -525,6 +554,8 @@ fn build_result_message(
                 result_id: Some(uuid::Uuid::new_v4().to_string()),
                 instance_id: input.instance_id.clone(),
                 node_id: input.node_id.clone(),
+                attempt: input.attempt,
+                dispatch_id,
                 output: inject_metrics(None, wall_time_ms),
                 error: Some(e.to_string()),
                 trace_context: None,
@@ -540,6 +571,11 @@ fn make_test_task(plugin_ref: &str) -> TaskMessage {
     TaskMessage {
         instance_id: orbflow_core::execution::InstanceId::new("inst-test"),
         node_id: "node-1".into(),
+        dispatch_id: Some(dispatch_identity(
+            &orbflow_core::execution::InstanceId::new("inst-test"),
+            "node-1",
+            1,
+        )),
         plugin_ref: plugin_ref.into(),
         config: None,
         input: None,

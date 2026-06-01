@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -38,6 +38,8 @@ pub struct WebhookState {
     routes: Arc<DashMap<String, (WorkflowId, Option<String>)>>,
     /// Per-workflow rate limiter: workflow_id -> (count, window_start).
     rate_limits: Arc<DashMap<String, (u32, std::time::Instant)>>,
+    /// Server bearer token. When configured, webhook ingress requires it.
+    auth_token: Option<String>,
     fire: TriggerCallback,
 }
 
@@ -47,14 +49,21 @@ pub struct WebhookState {
 /// `/webhooks/{workflow_id}/{path}`.
 pub struct WebhookHandler {
     routes: Arc<DashMap<String, (WorkflowId, Option<String>)>>,
+    auth_token: Option<String>,
     fire: TriggerCallback,
 }
 
 impl WebhookHandler {
     /// Creates a new webhook handler.
     pub fn new(fire: TriggerCallback) -> Self {
+        Self::new_with_auth(fire, None)
+    }
+
+    /// Creates a new webhook handler with optional bearer-token auth.
+    pub fn new_with_auth(fire: TriggerCallback, auth_token: Option<String>) -> Self {
         Self {
             routes: Arc::new(DashMap::new()),
+            auth_token,
             fire,
         }
     }
@@ -97,6 +106,7 @@ impl WebhookHandler {
         let state = WebhookState {
             routes: Arc::clone(&self.routes),
             rate_limits: Arc::new(DashMap::new()),
+            auth_token: self.auth_token.clone(),
             fire: Arc::clone(&self.fire),
         };
 
@@ -179,6 +189,18 @@ fn verify_signature(secret: &str, body_bytes: &[u8], signature_header: &str) -> 
     expected.as_slice().ct_eq(&provided).into()
 }
 
+fn verify_bearer_token(headers: &HeaderMap, expected: &str) -> bool {
+    let Some(provided) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+    else {
+        return false;
+    };
+
+    provided.as_bytes().ct_eq(expected.as_bytes()).into()
+}
+
 /// Decodes a hex string to bytes.
 fn hex_decode(s: &str) -> Result<Vec<u8>, ()> {
     if !s.len().is_multiple_of(2) {
@@ -210,8 +232,31 @@ async fn process_webhook(
         }
     };
 
+    if let Some(ref expected_token) = state.auth_token
+        && !verify_bearer_token(headers, expected_token)
+    {
+        warn!(key = %key, "webhook bearer token verification failed");
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "unauthorized"})),
+        )
+            .into_response();
+    }
+
+    let Some(ref secret) = secret else {
+        if state.auth_token.is_none() {
+            warn!(key = %key, "webhook route has no server auth token or signature secret configured");
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "webhook signature required"})),
+            )
+                .into_response();
+        }
+        return verify_and_merge_payload(state, key, wf_id, query, raw_body).await;
+    };
+
     // Verify HMAC-SHA256 signature against the raw request bytes (not re-serialized).
-    if let Some(ref secret) = secret {
+    {
         let sig_header = headers
             .get("x-orbflow-signature")
             .and_then(|v| v.to_str().ok())
@@ -236,6 +281,16 @@ async fn process_webhook(
         }
     }
 
+    verify_and_merge_payload(state, key, wf_id, query, raw_body).await
+}
+
+async fn verify_and_merge_payload(
+    state: &WebhookState,
+    key: &str,
+    wf_id: WorkflowId,
+    query: WebhookQuery,
+    raw_body: axum::body::Bytes,
+) -> Response {
     // Deserialize body after signature verification.
     let body: Option<HashMap<String, serde_json::Value>> = if raw_body.is_empty() {
         None
@@ -291,6 +346,19 @@ async fn process_webhook(
     let mut payload: HashMap<String, serde_json::Value> = body.unwrap_or_default();
 
     for (k, v) in query {
+        if payload.contains_key(&k) {
+            warn!(
+                workflow = %wf_id,
+                key = %key,
+                field = k.as_str(),
+                "webhook query parameter conflicts with body field"
+            );
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "query parameter conflicts with body field"})),
+            )
+                .into_response();
+        }
         payload.insert(k, serde_json::Value::String(v));
     }
 
@@ -316,6 +384,7 @@ async fn process_webhook(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderValue;
 
     fn noop_callback() -> TriggerCallback {
         Arc::new(|_wf, _tt, _payload| Box::pin(async {}))
@@ -323,6 +392,44 @@ mod tests {
 
     fn wf_id(s: &str) -> WorkflowId {
         WorkflowId(s.to_string())
+    }
+
+    fn test_state(
+        auth_token: Option<String>,
+        secret: Option<String>,
+        fire: TriggerCallback,
+    ) -> WebhookState {
+        let routes = Arc::new(DashMap::new());
+        routes.insert("w1".to_owned(), (wf_id("w1"), secret));
+        WebhookState {
+            routes,
+            rate_limits: Arc::new(DashMap::new()),
+            auth_token,
+            fire,
+        }
+    }
+
+    fn signed_headers(secret: &str, body: &[u8], bearer: Option<&str>) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(body);
+        let digest = mac.finalize().into_bytes();
+        let mut signature = String::from("sha256=");
+        use std::fmt::Write as _;
+        for byte in digest {
+            write!(&mut signature, "{byte:02x}").unwrap();
+        }
+        headers.insert(
+            "x-orbflow-signature",
+            HeaderValue::from_str(&signature).unwrap(),
+        );
+        if let Some(token) = bearer {
+            headers.insert(
+                header::AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+            );
+        }
+        headers
     }
 
     #[test]
@@ -392,5 +499,50 @@ mod tests {
         let handler = WebhookHandler::new(noop_callback());
         let _router = handler.router();
         // Constructing the router should not panic
+    }
+
+    #[tokio::test]
+    async fn signed_route_requires_hmac_even_with_bearer_token() {
+        let state = test_state(
+            Some("server-token".to_owned()),
+            Some("route-secret".to_owned()),
+            noop_callback(),
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer server-token"),
+        );
+
+        let response = process_webhook(
+            &state,
+            "w1",
+            &headers,
+            HashMap::new(),
+            axum::body::Bytes::from_static(br#"{"id":"signed"}"#),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn signed_route_rejects_query_conflict_with_body_field() {
+        let body = br#"{"id":"signed"}"#;
+        let state = test_state(None, Some("route-secret".to_owned()), noop_callback());
+        let headers = signed_headers("route-secret", body, None);
+        let mut query = HashMap::new();
+        query.insert("id".to_owned(), "unsigned".to_owned());
+
+        let response = process_webhook(
+            &state,
+            "w1",
+            &headers,
+            query,
+            axum::body::Bytes::from_static(body),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

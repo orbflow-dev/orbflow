@@ -184,8 +184,16 @@ impl NodeExecutor for AiClassifyNode {
         let usage_val = usage_to_json(&response.usage);
 
         // Parse the JSON response to extract classification fields.
-        let parsed = serde_json::from_str::<Value>(&response.content)
-            .unwrap_or(Value::Object(serde_json::Map::new()));
+        let parsed = serde_json::from_str::<Value>(&response.content).map_err(|e| {
+            OrbflowError::Internal(format!(
+                "ai-classify node: model returned invalid JSON: {e}"
+            ))
+        })?;
+        if !parsed.is_object() {
+            return Err(OrbflowError::Internal(
+                "ai-classify node: model returned JSON that is not an object".into(),
+            ));
+        }
 
         let category = parsed
             .get("category")

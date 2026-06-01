@@ -43,7 +43,7 @@ export interface WorkflowNode {
   parameters?: { key: string; mode: ParameterMode; value?: unknown; expression?: string }[];
   retry?: {
     max_attempts: number;
-    delay: string;
+    delay: number;
     multiplier: number;
   };
   compensate?: {

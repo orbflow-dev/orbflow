@@ -206,6 +206,20 @@ pub trait Engine: Send + Sync {
         id: &WorkflowId,
         input: HashMap<String, serde_json::Value>,
     ) -> Result<Instance, OrbflowError>;
+
+    /// Starts a workflow with an explicit owner context for tenant-scoped
+    /// execution resources such as credentials.
+    async fn start_workflow_for_owner(
+        &self,
+        id: &WorkflowId,
+        input: HashMap<String, serde_json::Value>,
+        owner_id: &str,
+    ) -> Result<Instance, OrbflowError> {
+        let _ = (id, input, owner_id);
+        Err(OrbflowError::Forbidden(
+            "owner-scoped workflow start is not supported".into(),
+        ))
+    }
     async fn get_instance(&self, id: &InstanceId) -> Result<Instance, OrbflowError>;
     async fn list_instances(&self, opts: ListOptions)
     -> Result<(Vec<Instance>, i64), OrbflowError>;
@@ -518,14 +532,17 @@ pub trait CredentialStore: Send + Sync {
     /// admin paths that bypass ownership checks. Implementations MUST NOT fall
     /// back to an unscoped query on error — all errors must be propagated.
     ///
-    /// Default implementation delegates to [`get_credential`](Self::get_credential)
-    /// (no owner filtering) for stores that don't yet support owner scoping.
+    /// Stores that do not support owner scoping must fail closed. Falling back
+    /// to an unscoped lookup would bypass tenant isolation.
     async fn get_credential_for_owner(
         &self,
         id: &CredentialId,
-        _owner_id: Option<&str>,
+        owner_id: Option<&str>,
     ) -> Result<Credential, OrbflowError> {
-        self.get_credential(id).await
+        let _ = (id, owner_id);
+        Err(OrbflowError::Forbidden(
+            "owner-scoped credential lookup is not supported".into(),
+        ))
     }
 
     async fn update_credential(&self, cred: &Credential) -> Result<(), OrbflowError>;

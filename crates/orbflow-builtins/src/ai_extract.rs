@@ -140,7 +140,9 @@ impl NodeExecutor for AiExtractNode {
         let cost = estimate_cost(&config.provider, &config.model, &response.usage);
         let usage_val = usage_to_json(&response.usage);
 
-        let extracted = serde_json::from_str::<Value>(&response.content).unwrap_or(Value::Null);
+        let extracted = serde_json::from_str::<Value>(&response.content).map_err(|e| {
+            OrbflowError::Internal(format!("ai-extract node: model returned invalid JSON: {e}"))
+        })?;
 
         Ok(NodeOutput {
             data: Some(make_output(vec![

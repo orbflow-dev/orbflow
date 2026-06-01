@@ -46,6 +46,28 @@ describe("buildMappingExpression", () => {
     );
   });
 
+  it("escapes node ids in generated CEL references", () => {
+    const mapping: FieldMapping = {
+      mode: "expression",
+      sourceNodeId: 'http"node\\prod',
+      sourcePath: "body.data",
+    };
+    expect(buildMappingExpression(mapping)).toBe(
+      '=nodes["http\\"node\\\\prod"].body.data',
+    );
+  });
+
+  it("uses bracket access for source path segments that are not CEL identifiers", () => {
+    const mapping: FieldMapping = {
+      mode: "expression",
+      sourceNodeId: "http-1",
+      sourcePath: 'body.error-message."quoted key"',
+    };
+    expect(buildMappingExpression(mapping)).toBe(
+      '=nodes["http-1"].body["error-message"]["\\"quoted key\\""]',
+    );
+  });
+
   it("prepends = to celExpression if missing", () => {
     const mapping: FieldMapping = {
       mode: "expression",
@@ -117,6 +139,17 @@ describe("buildConditionExpression", () => {
     );
   });
 
+  it("escapes string literals in comparison rules", () => {
+    const rule: ConditionRule = {
+      field: 'nodes["http-1"].body.message',
+      operator: "==",
+      value: 'line 1\nline 2 says "ok" in C:\\tmp',
+    };
+    expect(buildConditionExpression(rule)).toBe(
+      'nodes["http-1"].body.message == "line 1\\nline 2 says \\"ok\\" in C:\\\\tmp"',
+    );
+  });
+
   it("builds contains operator", () => {
     const rule: ConditionRule = {
       field: 'nodes["http-1"].body',
@@ -125,6 +158,17 @@ describe("buildConditionExpression", () => {
     };
     expect(buildConditionExpression(rule)).toBe(
       'nodes["http-1"].body.contains("error")',
+    );
+  });
+
+  it("escapes string literals in string operator calls", () => {
+    const rule: ConditionRule = {
+      field: 'nodes["http-1"].body',
+      operator: "contains",
+      value: 'bad "token"\\suffix',
+    };
+    expect(buildConditionExpression(rule)).toBe(
+      'nodes["http-1"].body.contains("bad \\"token\\"\\\\suffix")',
     );
   });
 

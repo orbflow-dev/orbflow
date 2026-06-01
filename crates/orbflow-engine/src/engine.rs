@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock, Weak};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -390,6 +391,7 @@ impl OrbflowEngine {
         if ns.attempt == 0 {
             ns.attempt = 1;
         }
+        let dispatch_id = dispatch_identity(&inst.id, &node.id, ns.attempt);
 
         let input = self
             .resolve_input_mapping(node.input_mapping.as_ref(), &inst.context)
@@ -416,6 +418,7 @@ impl OrbflowEngine {
         let mut task = TaskMessage {
             instance_id: inst.id.clone(),
             node_id: node.id.clone(),
+            dispatch_id: Some(dispatch_id),
             plugin_ref: node.plugin_ref.clone(),
             config: node.config.clone(),
             input: Some(input),
@@ -528,6 +531,11 @@ impl OrbflowEngine {
                 task.trace_context = Some(injector);
             }
         }
+
+        // Persist the queued attempt before publishing. A fast worker can
+        // return a result before the caller reaches its final save, so the
+        // durable state must already contain the attempt/dispatch identity.
+        self.save_instance(inst).await?;
 
         let data = serde_json::to_vec(&task)
             .map_err(|e| OrbflowError::Internal(format!("marshal task: {e}")))?;
@@ -678,11 +686,6 @@ impl OrbflowEngine {
     > {
         let mut result = HashMap::new();
 
-        let cred_store = match &self.cred_store {
-            Some(cs) => cs,
-            None => return Ok(result),
-        };
-
         // Collect unique credential IDs from both maps.
         let mut cred_ids = std::collections::HashSet::new();
         for map in [config, parameters].into_iter().flatten() {
@@ -692,6 +695,25 @@ impl OrbflowEngine {
                 cred_ids.insert(id.clone());
             }
         }
+
+        if cred_ids.is_empty() {
+            return Ok(result);
+        }
+
+        if owner_id.is_none() {
+            return Err(OrbflowError::Forbidden(
+                "credential owner context is required".into(),
+            ));
+        }
+
+        let cred_store = match &self.cred_store {
+            Some(cs) => cs,
+            None => {
+                return Err(OrbflowError::InvalidNodeConfig(
+                    "credential store is not configured".into(),
+                ));
+            }
+        };
 
         // Fetch each unique credential once.
         for cred_id in cred_ids {
@@ -907,6 +929,8 @@ impl OrbflowEngine {
             if let Err(e) = self.dispatch_node(inst, wf, n).await {
                 error!(node = n.id.as_str(), error = %e, "failed to dispatch entry node");
                 self.mark_node_dispatch_failed(inst, &n.id, &e).await?;
+                self.cascade_terminal_skips(wf, inst).await;
+                return Ok(());
             }
         }
 
@@ -926,6 +950,8 @@ impl OrbflowEngine {
                         "failed to dispatch post-trigger node"
                     );
                     self.mark_node_dispatch_failed(inst, node_id, &e).await?;
+                    self.cascade_terminal_skips(wf, inst).await;
+                    return Ok(());
                 }
             }
         }
@@ -934,7 +960,7 @@ impl OrbflowEngine {
 
     /// Marks a node as failed due to a dispatch-time error (e.g. missing
     /// credential) and transitions the instance to `Failed`.
-    async fn mark_node_dispatch_failed(
+    pub(crate) async fn mark_node_dispatch_failed(
         &self,
         inst: &mut Instance,
         node_id: &str,
@@ -978,6 +1004,10 @@ impl OrbflowEngine {
         Ok(())
     }
 
+    pub(crate) async fn cascade_terminal_skips(&self, wf: &Workflow, inst: &mut Instance) {
+        let _ = find_ready_nodes(wf, inst, &self.cel).await;
+    }
+
     /// Returns true if any completed node in the instance has a compensation config.
     fn has_compensation(&self, wf: &Workflow, inst: &Instance) -> bool {
         for ns in inst.node_states.values() {
@@ -991,6 +1021,124 @@ impl OrbflowEngine {
             }
         }
         false
+    }
+
+    fn retry_delay(retry: &RetryPolicy, failed_attempt: i32) -> Duration {
+        if retry.delay == 0 {
+            return Duration::ZERO;
+        }
+
+        let exponent = failed_attempt.saturating_sub(1);
+        let multiplier = if retry.multiplier.is_finite() && retry.multiplier > 0.0 {
+            retry.multiplier
+        } else {
+            1.0
+        };
+        let delay_ms = (retry.delay as f64 * multiplier.powi(exponent))
+            .round()
+            .clamp(0.0, u64::MAX as f64) as u64;
+        Duration::from_millis(delay_ms)
+    }
+
+    fn validate_dispatch_identity(
+        &self,
+        result: &ResultMessage,
+        expected_attempt: i32,
+    ) -> Result<(), OrbflowError> {
+        // Rolling upgrades can briefly mix new engines with legacy workers that
+        // do not echo dispatch_id and may omit attempt. Accept only the v1
+        // legacy shape; strict dispatch_id validation still applies whenever a
+        // worker sends the field.
+        if result.dispatch_id.is_none()
+            && result.v <= 1
+            && (result.attempt == 0 || result.attempt == expected_attempt)
+        {
+            return Ok(());
+        }
+
+        if result.attempt != expected_attempt {
+            return Err(OrbflowError::Bus(format!(
+                "stale result for node {}: attempt {} does not match expected attempt {}",
+                result.node_id, result.attempt, expected_attempt
+            )));
+        }
+
+        let expected_dispatch_id =
+            dispatch_identity(&result.instance_id, &result.node_id, expected_attempt);
+        match result.dispatch_id.as_deref() {
+            Some(dispatch_id) if dispatch_id == expected_dispatch_id => Ok(()),
+            Some(dispatch_id) => Err(OrbflowError::Bus(format!(
+                "stale result for node {}: dispatch_id {} does not match expected {}",
+                result.node_id, dispatch_id, expected_dispatch_id
+            ))),
+            None => Err(OrbflowError::Bus(format!(
+                "result for node {} is missing dispatch_id",
+                result.node_id
+            ))),
+        }
+    }
+
+    fn validate_node_result_identity(
+        &self,
+        inst: &Instance,
+        result: &ResultMessage,
+    ) -> Result<(), OrbflowError> {
+        let ns = inst.node_states.get(&result.node_id).ok_or_else(|| {
+            OrbflowError::Internal(format!(
+                "unknown node {} in instance {}",
+                result.node_id, inst.id
+            ))
+        })?;
+
+        if !matches!(ns.status, NodeStatus::Queued | NodeStatus::Running) {
+            return Err(OrbflowError::Bus(format!(
+                "stale result for node {}: node status is {:?}",
+                result.node_id, ns.status
+            )));
+        }
+
+        self.validate_dispatch_identity(result, ns.attempt)
+    }
+
+    fn validate_compensation_result_identity(
+        &self,
+        inst: &Instance,
+        result: &ResultMessage,
+    ) -> Result<(), OrbflowError> {
+        self.validate_dispatch_identity(result, 1)?;
+
+        let orig_node_id = result
+            .node_id
+            .strip_prefix("_compensate_")
+            .unwrap_or(&result.node_id)
+            .to_owned();
+        let saga = inst.saga.as_ref().ok_or_else(|| {
+            OrbflowError::Bus(format!(
+                "compensation result for node {} received without active saga",
+                result.node_id
+            ))
+        })?;
+
+        if !saga.compensating {
+            return Err(OrbflowError::Bus(format!(
+                "compensation result for node {} received after compensation finished",
+                result.node_id
+            )));
+        }
+        if !saga.completed_nodes.contains(&orig_node_id) {
+            return Err(OrbflowError::Bus(format!(
+                "compensation result for node {} was not dispatched",
+                result.node_id
+            )));
+        }
+        if saga.compensated_nodes.contains(&orig_node_id) {
+            return Err(OrbflowError::Bus(format!(
+                "duplicate compensation result for node {}",
+                result.node_id
+            )));
+        }
+
+        Ok(())
     }
 
     /// Saves an instance with optimistic locking retry (loop-based to avoid
@@ -1150,8 +1298,10 @@ impl OrbflowEngine {
         let mu = self.lock_instance(&result.instance_id);
         let _guard = mu.lock().await;
 
-        // Idempotency check (inside per-instance lock).
-        if let Some(ref result_id) = result.result_id
+        // Idempotency check (inside per-instance lock). Record the result ID
+        // only after durable state handling succeeds so a failed save can be
+        // retried by redelivery instead of being hidden by in-memory dedupe.
+        let dedupe_record = if let Some(ref result_id) = result.result_id
             && !result_id.is_empty()
         {
             let rs = self
@@ -1169,9 +1319,21 @@ impl OrbflowEngine {
                 );
                 return Ok(());
             }
-            rs.add(result_id.clone());
+            Some((rs, result_id.clone()))
+        } else {
+            None
+        };
+
+        self.handle_node_result_durable(result).await?;
+
+        if let Some((rs, result_id)) = dedupe_record {
+            rs.add(result_id);
         }
 
+        Ok(())
+    }
+
+    async fn handle_node_result_durable(&self, result: &ResultMessage) -> Result<(), OrbflowError> {
         let span = tracing::info_span!(
             SPAN_NODE_EXECUTE,
             instance_id = %result.instance_id,
@@ -1186,13 +1348,32 @@ impl OrbflowEngine {
 
         // Route compensation results to the saga handler.
         if result.node_id.starts_with("_compensate_") {
-            crate::saga::handle_compensation_result(self, &mut inst, &result.node_id).await?;
+            if let Err(e) = self.validate_compensation_result_identity(&inst, result) {
+                warn!(
+                    instance = %result.instance_id,
+                    node = result.node_id.as_str(),
+                    error = %e,
+                    "compensation result rejected"
+                );
+                return Ok(());
+            }
+            crate::saga::handle_compensation_result(self, &mut inst, result).await?;
             self.cleanup_instance(&inst);
             return Ok(());
         }
 
         if inst.is_terminal() {
             self.cleanup_instance(&inst);
+            return Ok(());
+        }
+
+        if let Err(e) = self.validate_node_result_identity(&inst, result) {
+            warn!(
+                instance = %result.instance_id,
+                node = result.node_id.as_str(),
+                error = %e,
+                "node result rejected"
+            );
             return Ok(());
         }
 
@@ -1231,6 +1412,7 @@ impl OrbflowEngine {
                 && let Some(ref retry) = node.retry
                 && attempt < retry.max_attempts
             {
+                let retry_delay = Self::retry_delay(retry, attempt);
                 let ns = inst.node_states.get_mut(&result.node_id).ok_or_else(|| {
                     OrbflowError::Internal(format!(
                         "node state missing for result: {}",
@@ -1242,7 +1424,22 @@ impl OrbflowEngine {
                 inst.updated_at = now;
                 self.save_instance(&mut inst).await?;
                 let node = node.clone();
-                return self.dispatch_node(&mut inst, &wf, &node).await;
+                if !retry_delay.is_zero() {
+                    tokio::time::sleep(retry_delay).await;
+                }
+                if let Err(e) = self.dispatch_node(&mut inst, &wf, &node).await {
+                    error!(
+                        node = result.node_id.as_str(),
+                        error = %e,
+                        "failed to dispatch retry"
+                    );
+                    self.mark_node_dispatch_failed(&mut inst, &result.node_id, &e)
+                        .await?;
+                    self.cascade_terminal_skips(&wf, &mut inst).await;
+                    self.save_instance(&mut inst).await?;
+                    self.cleanup_instance(&inst);
+                }
+                return Ok(());
             }
 
             // Max retries exhausted or no retry policy.
@@ -1329,8 +1526,6 @@ impl OrbflowEngine {
 
             // Check if saga compensation is needed.
             if self.has_compensation(&wf, &inst) {
-                inst.status = InstanceStatus::Failed;
-                self.save_instance(&mut inst).await?;
                 return crate::saga::start_compensation(self, &mut inst, &wf, &result.node_id)
                     .await;
             }
@@ -1577,12 +1772,12 @@ impl OrbflowEngine {
                 let node = node.clone();
                 if let Err(e) = self.dispatch_node(&mut inst, &wf, &node).await {
                     error!(node = node_id.as_str(), error = %e, "failed to dispatch node");
-                    // Mark the node as failed so the instance doesn't stall silently.
-                    if let Some(ns) = inst.node_states.get_mut(node_id) {
-                        ns.status = NodeStatus::Failed;
-                        ns.error = Some(format!("dispatch failed: {e}"));
-                        ns.ended_at = Some(Utc::now());
-                    }
+                    self.mark_node_dispatch_failed(&mut inst, node_id, &e)
+                        .await?;
+                    self.cascade_terminal_skips(&wf, &mut inst).await;
+                    self.save_instance(&mut inst).await?;
+                    self.cleanup_instance(&inst);
+                    return Ok(());
                 }
             }
         }
@@ -1699,6 +1894,157 @@ impl OrbflowEngine {
         self.save_instance(&mut inst).await?;
         self.cleanup_instance(&inst);
         Ok(())
+    }
+
+    async fn start_workflow_with_owner(
+        &self,
+        id: &WorkflowId,
+        input: HashMap<String, serde_json::Value>,
+        owner_id: Option<&str>,
+    ) -> Result<Instance, OrbflowError> {
+        if owner_id.is_some_and(|oid| oid.trim().is_empty()) {
+            return Err(OrbflowError::Forbidden(
+                "workflow owner context must not be empty".into(),
+            ));
+        }
+
+        let span = tracing::info_span!(
+            SPAN_WORKFLOW_EXECUTE,
+            workflow_id = %id,
+            owner_scoped = owner_id.is_some(),
+            otel.name = "start_workflow",
+        );
+
+        async move {
+            let wf = self.store.get_workflow(id).await?;
+            self.validate_node_configs(&wf)?;
+
+            // Enforce persistent budget limits before starting.
+            if let Some(ref bs) = self.budget_store {
+                crate::budget::check_budget_before_start(bs.as_ref(), &id.0).await?;
+            }
+
+            let now = Utc::now();
+            let mut inst = Instance {
+                id: InstanceId::new(Uuid::new_v4().to_string()),
+                workflow_id: wf.id.clone(),
+                status: InstanceStatus::Running,
+                node_states: wf
+                    .nodes
+                    .iter()
+                    .map(|n| {
+                        (
+                            n.id.clone(),
+                            NodeState {
+                                node_id: n.id.clone(),
+                                status: NodeStatus::Pending,
+                                input: None,
+                                output: None,
+                                parameters: None,
+                                error: None,
+                                attempt: 0,
+                                started_at: None,
+                                ended_at: None,
+                            },
+                        )
+                    })
+                    .collect(),
+                context: ExecutionContext::new(input.clone()),
+                saga: None,
+                parent_id: None,
+                instance_metrics: None,
+                workflow_version: Some(wf.version),
+                owner_id: owner_id.map(str::to_owned),
+                version: 1,
+                created_at: now,
+                updated_at: now,
+            };
+
+            let start_event = DomainEvent::InstanceStarted(InstanceStartedEvent {
+                base: BaseEvent::new(inst.id.clone(), inst.version),
+                input: input.clone(),
+            });
+
+            // Create instance and append start event (separate calls).
+            self.store.create_instance(&inst).await?;
+            self.metrics.record_workflow_started(&wf.id.0);
+            if let Err(e) = self.store.append_event(start_event).await {
+                warn!(
+                    instance = %inst.id,
+                    error = %e,
+                    "failed to append instance-started event"
+                );
+            }
+
+            // Resolve capability nodes first.
+            self.resolve_capabilities(&mut inst, &wf).await?;
+
+            // Mark trigger nodes as completed so downstream nodes can be dispatched.
+            let has_triggers = self.mark_triggers_completed(&mut inst, &wf, &input);
+
+            // Dispatch initial nodes.
+            self.dispatch_initial_nodes(&mut inst, &wf, has_triggers)
+                .await?;
+
+            // If all nodes reached a terminal state, mark as completed.
+            // Do not overwrite a Failed status set during dispatch.
+            if inst.all_nodes_terminal() && inst.status != InstanceStatus::Failed {
+                inst.status = InstanceStatus::Completed;
+                self.sla_monitor.record_success(&inst.workflow_id);
+                let duration_secs =
+                    (Utc::now() - inst.created_at).num_milliseconds() as f64 / 1000.0;
+                self.metrics
+                    .record_workflow_completed(&wf.id.0, duration_secs);
+                let duration_ms = (Utc::now() - inst.created_at).num_milliseconds();
+
+                // Check SLA.
+                self.check_and_record_sla_anomalies(&inst, duration_ms)
+                    .await;
+
+                // Increment persistent budget cost after successful completion.
+                // Sum actual metered cost from node outputs (e.g. AI nodes report cost_usd).
+                if let Some(ref bs) = self.budget_store {
+                    let cost: f64 = inst
+                        .node_states
+                        .values()
+                        .filter_map(|ns| ns.output.as_ref()?.get("cost_usd")?.as_f64())
+                        .sum();
+                    if cost > 0.0 {
+                        if let Ok(permit) = self.metrics_semaphore.clone().try_acquire_owned() {
+                            let wf_id = inst.workflow_id.0.clone();
+                            let bs = bs.clone();
+                            tokio::spawn(async move {
+                                let _permit = permit;
+                                if let Err(e) = bs.increment_cost(&wf_id, cost).await {
+                                    tracing::warn!(error = %e, "failed to increment budget cost");
+                                }
+                            });
+                        } else {
+                            tracing::warn!(
+                                "metrics write backlog full - skipping budget cost persistence"
+                            );
+                        }
+                    }
+                }
+
+                if let Err(e) = self
+                    .store
+                    .append_event(DomainEvent::InstanceCompleted(InstanceCompletedEvent {
+                        base: BaseEvent::new(inst.id.clone(), inst.version),
+                    }))
+                    .await
+                {
+                    error!(error = %e, instance = %inst.id, "failed to persist InstanceCompleted event");
+                }
+            }
+
+            // Persist state after dispatching.
+            self.save_instance(&mut inst).await?;
+
+            Ok(inst)
+        }
+        .instrument(span)
+        .await
     }
 
     /// Accessor for the store (used by saga, resume, subworkflow modules).
@@ -1842,142 +2188,17 @@ impl Engine for OrbflowEngine {
         id: &WorkflowId,
         input: HashMap<String, serde_json::Value>,
     ) -> Result<Instance, OrbflowError> {
-        let span = tracing::info_span!(
-            SPAN_WORKFLOW_EXECUTE,
-            workflow_id = %id,
-            otel.name = "start_workflow",
-        );
+        self.start_workflow_with_owner(id, input, None).await
+    }
 
-        async move {
-            let wf = self.store.get_workflow(id).await?;
-            self.validate_node_configs(&wf)?;
-
-            // Enforce persistent budget limits before starting.
-            if let Some(ref bs) = self.budget_store {
-                crate::budget::check_budget_before_start(bs.as_ref(), &id.0).await?;
-            }
-
-            let now = Utc::now();
-            let mut inst = Instance {
-                id: InstanceId::new(Uuid::new_v4().to_string()),
-                workflow_id: wf.id.clone(),
-                status: InstanceStatus::Running,
-                node_states: wf
-                    .nodes
-                    .iter()
-                    .map(|n| {
-                        (
-                            n.id.clone(),
-                            NodeState {
-                                node_id: n.id.clone(),
-                                status: NodeStatus::Pending,
-                                input: None,
-                                output: None,
-                                parameters: None,
-                                error: None,
-                                attempt: 0,
-                                started_at: None,
-                                ended_at: None,
-                            },
-                        )
-                    })
-                    .collect(),
-                context: ExecutionContext::new(input.clone()),
-                saga: None,
-                parent_id: None,
-                instance_metrics: None,
-                workflow_version: Some(wf.version),
-                owner_id: None,
-                version: 1,
-                created_at: now,
-                updated_at: now,
-            };
-
-            let start_event = DomainEvent::InstanceStarted(InstanceStartedEvent {
-                base: BaseEvent::new(inst.id.clone(), inst.version),
-                input: input.clone(),
-            });
-
-            // Create instance and append start event (separate calls).
-            self.store.create_instance(&inst).await?;
-            self.metrics.record_workflow_started(&wf.id.0);
-            if let Err(e) = self.store.append_event(start_event).await {
-                warn!(
-                    instance = %inst.id,
-                    error = %e,
-                    "failed to append instance-started event"
-                );
-            }
-
-            // Resolve capability nodes first.
-            self.resolve_capabilities(&mut inst, &wf).await?;
-
-            // Mark trigger nodes as completed so downstream nodes can be dispatched.
-            let has_triggers = self.mark_triggers_completed(&mut inst, &wf, &input);
-
-            // Dispatch initial nodes.
-            self.dispatch_initial_nodes(&mut inst, &wf, has_triggers)
-                .await?;
-
-            // If all nodes reached a terminal state, mark as completed.
-            // Do not overwrite a Failed status set during dispatch.
-            if inst.all_nodes_terminal() && inst.status != InstanceStatus::Failed {
-                inst.status = InstanceStatus::Completed;
-                self.sla_monitor.record_success(&inst.workflow_id);
-                let duration_secs =
-                    (Utc::now() - inst.created_at).num_milliseconds() as f64 / 1000.0;
-                self.metrics
-                    .record_workflow_completed(&wf.id.0, duration_secs);
-                let duration_ms = (Utc::now() - inst.created_at).num_milliseconds();
-
-                // Check SLA.
-                self.check_and_record_sla_anomalies(&inst, duration_ms)
-                    .await;
-
-                // Increment persistent budget cost after successful completion.
-                // Sum actual metered cost from node outputs (e.g. AI nodes report cost_usd).
-                if let Some(ref bs) = self.budget_store {
-                    let cost: f64 = inst
-                        .node_states
-                        .values()
-                        .filter_map(|ns| ns.output.as_ref()?.get("cost_usd")?.as_f64())
-                        .sum();
-                    if cost > 0.0 {
-                        if let Ok(permit) = self.metrics_semaphore.clone().try_acquire_owned() {
-                            let wf_id = inst.workflow_id.0.clone();
-                            let bs = bs.clone();
-                            tokio::spawn(async move {
-                                let _permit = permit;
-                                if let Err(e) = bs.increment_cost(&wf_id, cost).await {
-                                    tracing::warn!(error = %e, "failed to increment budget cost");
-                                }
-                            });
-                        } else {
-                            tracing::warn!(
-                                "metrics write backlog full — skipping budget cost persistence"
-                            );
-                        }
-                    }
-                }
-
-                if let Err(e) = self
-                    .store
-                    .append_event(DomainEvent::InstanceCompleted(InstanceCompletedEvent {
-                        base: BaseEvent::new(inst.id.clone(), inst.version),
-                    }))
-                    .await
-                {
-                    error!(error = %e, instance = %inst.id, "failed to persist InstanceCompleted event");
-                }
-            }
-
-            // Persist state after dispatching.
-            self.save_instance(&mut inst).await?;
-
-            Ok(inst)
-        }
-        .instrument(span)
-        .await
+    async fn start_workflow_for_owner(
+        &self,
+        id: &WorkflowId,
+        input: HashMap<String, serde_json::Value>,
+        owner_id: &str,
+    ) -> Result<Instance, OrbflowError> {
+        self.start_workflow_with_owner(id, input, Some(owner_id))
+            .await
     }
 
     async fn get_instance(&self, id: &InstanceId) -> Result<Instance, OrbflowError> {
@@ -2234,7 +2455,15 @@ impl Engine for OrbflowEngine {
         ns.status = NodeStatus::Queued;
 
         // Dispatch the node for execution.
-        self.dispatch_node(&mut inst, &wf, node).await?;
+        if let Err(e) = self.dispatch_node(&mut inst, &wf, node).await {
+            error!(instance = %instance_id, node = %node_id, error = %e, "failed to dispatch approved node");
+            self.mark_node_dispatch_failed(&mut inst, node_id, &e)
+                .await?;
+            self.cascade_terminal_skips(&wf, &mut inst).await;
+            self.save_instance(&mut inst).await?;
+            self.cleanup_instance(&inst);
+            return Err(e);
+        }
         self.save_instance(&mut inst).await?;
 
         Ok(())

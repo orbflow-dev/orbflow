@@ -142,6 +142,103 @@ describe("sanitizeImportedWorkflow", () => {
     const result = sanitizeImportedWorkflow(raw);
     expect(result!.edges![0].condition).toBeUndefined();
   });
+
+  it("preserves supported workflow and node schema fields", () => {
+    const raw = {
+      name: "Full Schema Flow",
+      description: "imports should not flatten the workflow",
+      status: "active",
+      nodes: [
+        {
+          id: "trigger-1",
+          name: "Order Created",
+          kind: "trigger",
+          type: "builtin",
+          plugin_ref: "builtin:trigger-event",
+          position: { x: 10, y: 20 },
+          input_mapping: { payload: '=trigger["body"]' },
+          config: { event: "order.created" },
+          parameters: [{ key: "region", mode: "static", value: "us" }],
+          retry: { max_attempts: 3, delay: "5s", multiplier: 2 },
+          compensate: {
+            plugin_ref: "builtin:log",
+            input_mapping: { message: "rollback" },
+          },
+          capability_ports: [
+            { key: "db", capability_type: "database", required: true },
+          ],
+          metadata: {
+            description: "event trigger",
+            docs: "https://docs.example.test",
+            image_url: "/nodes/event.png",
+          },
+          trigger_config: {
+            trigger_type: "event",
+            event_name: "order.created",
+          },
+          requires_approval: true,
+          parent_id: "group-1",
+        },
+      ],
+      edges: [
+        {
+          id: "edge-1",
+          source: "trigger-1",
+          target: "log-1",
+          condition: '=nodes["trigger-1"].body.total > 0',
+        },
+      ],
+      capability_edges: [
+        {
+          id: "cap-1",
+          source_node_id: "trigger-1",
+          target_node_id: "log-1",
+          target_port_key: "db",
+        },
+      ],
+      annotations: [
+        {
+          id: "note-1",
+          type: "sticky_note",
+          content: "keep this context",
+          position: { x: 40, y: 50 },
+          style: { color: "yellow" },
+        },
+      ],
+    };
+
+    const result = sanitizeImportedWorkflow(raw) as Record<string, unknown> | null;
+    expect(result).not.toBeNull();
+    expect(result!.status).toBe("active");
+    expect(result!.capability_edges).toEqual(raw.capability_edges);
+    expect(result!.annotations).toEqual(raw.annotations);
+    expect(result!.nodes).toEqual([
+      {
+        ...raw.nodes[0],
+        retry: { max_attempts: 3, delay: 5000, multiplier: 2 },
+        position: { x: 10, y: 20 },
+      },
+    ]);
+  });
+
+  it("drops retry policies with invalid delay values", () => {
+    const raw = {
+      name: "Bad Retry Flow",
+      nodes: [
+        {
+          id: "n1",
+          name: "HTTP Request",
+          type: "builtin",
+          plugin_ref: "http_request",
+          position: { x: 0, y: 0 },
+          retry: { max_attempts: 3, delay: "later", multiplier: 2 },
+        },
+      ],
+    };
+
+    const result = sanitizeImportedWorkflow(raw);
+    expect(result!.nodes![0].retry).toBeUndefined();
+  });
 });
 
 // -- buildExportPayload ----------------------------

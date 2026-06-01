@@ -146,6 +146,8 @@ async fn build_engine(
                     result_id: None,
                     instance_id: task.instance_id,
                     node_id: task.node_id,
+                    attempt: task.attempt,
+                    dispatch_id: task.dispatch_id,
                     output: out.data,
                     error: out.error,
                     trace_context: None,
@@ -155,6 +157,8 @@ async fn build_engine(
                     result_id: None,
                     instance_id: task.instance_id,
                     node_id: task.node_id,
+                    attempt: task.attempt,
+                    dispatch_id: task.dispatch_id,
                     output: None,
                     error: Some(e.to_string()),
                     trace_context: None,
@@ -391,5 +395,92 @@ async fn saga_does_not_complete_when_no_nodes_have_compensate_config() {
     assert_eq!(
         completed_count, 0,
         "CompensationCompleted must not fire when no compensate configs exist"
+    );
+}
+
+#[tokio::test]
+async fn saga_failed_compensation_marks_instance_terminal_failed() {
+    let store = Arc::new(MockStore::new());
+    let bus = Arc::new(MockBus::new());
+
+    let trigger = make_node("trigger-1", "builtin:trigger-manual", NodeKind::Trigger);
+    let action_a = make_node_with_compensate("action-a", "builtin:action-a", "builtin:compensate");
+    let action_b = make_node("action-b", "builtin:action-b", NodeKind::Action);
+
+    let wf = make_workflow(
+        "wf-saga-comp-fails",
+        vec![trigger, action_a, action_b],
+        vec![
+            make_edge("e1", "trigger-1", "action-a"),
+            make_edge("e2", "action-a", "action-b"),
+        ],
+    );
+
+    let trig_exec = Arc::new(MockNodeExecutor::ok());
+    let a_exec = Arc::new(MockNodeExecutor::ok());
+    let b_exec = Arc::new(MockNodeExecutor::with_error(OrbflowError::Internal(
+        "simulated downstream failure".into(),
+    )));
+    let comp_exec = Arc::new(MockNodeExecutor::with_error(OrbflowError::Internal(
+        "compensation failure".into(),
+    )));
+
+    let engine = build_engine(
+        Arc::clone(&store),
+        Arc::clone(&bus),
+        vec![
+            ("builtin:trigger-manual", trig_exec as Arc<dyn NodeExecutor>),
+            ("builtin:action-a", a_exec as Arc<dyn NodeExecutor>),
+            ("builtin:action-b", b_exec as Arc<dyn NodeExecutor>),
+            (
+                "builtin:compensate",
+                Arc::clone(&comp_exec) as Arc<dyn NodeExecutor>,
+            ),
+        ],
+    )
+    .await;
+
+    engine.create_workflow(&wf).await.expect("create_workflow");
+    engine
+        .start_workflow(&WorkflowId::new("wf-saga-comp-fails"), HashMap::new())
+        .await
+        .expect("start_workflow");
+
+    use orbflow_core::execution::InstanceStatus;
+    let store_poll = Arc::clone(&store);
+    let failed_id = wait_for(std::time::Duration::from_secs(5), || {
+        let store_poll = Arc::clone(&store_poll);
+        async move {
+            let (instances, _) = store_poll
+                .list_instances(ListOptions {
+                    offset: 0,
+                    limit: 0,
+                })
+                .await
+                .ok()?;
+            let inst = instances.first()?;
+            let saga_terminal = inst.saga.as_ref().is_some_and(|s| !s.compensating);
+            if inst.status == InstanceStatus::Failed && saga_terminal {
+                Some(inst.id.clone())
+            } else {
+                None
+            }
+        }
+    })
+    .await
+    .expect("failed compensation should terminalize instance");
+
+    let events = store.load_events(&failed_id, 0).await.expect("load_events");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, DomainEvent::InstanceFailed(f) if f.error.contains("compensation for node action-a failed"))),
+        "compensation failure should emit a terminal InstanceFailed event"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, DomainEvent::CompensationCompleted(_))),
+        "failed compensation must not emit CompensationCompleted"
     );
 }

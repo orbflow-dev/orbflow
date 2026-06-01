@@ -8,6 +8,6 @@ pub mod handlers;
 pub mod middleware;
 mod router;
 
-pub use handlers::AppState;
+pub use handlers::{AppState, TriggerRegistry};
 pub use middleware::{AuthUser, StartRateLimiter, check_permission};
-pub use router::{HttpApiOptions, create_router};
+pub use router::{HttpApiOptions, create_router, create_router_with_trigger_registry};

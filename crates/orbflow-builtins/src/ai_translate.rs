@@ -168,7 +168,16 @@ impl NodeExecutor for AiTranslateNode {
         let cost = estimate_cost(&config.provider, &config.model, &response.usage);
         let usage_val = usage_to_json(&response.usage);
 
-        let parsed = serde_json::from_str::<Value>(&response.content).unwrap_or(Value::Null);
+        let parsed = serde_json::from_str::<Value>(&response.content).map_err(|e| {
+            OrbflowError::Internal(format!(
+                "ai-translate node: model returned invalid JSON: {e}"
+            ))
+        })?;
+        if !parsed.is_object() {
+            return Err(OrbflowError::Internal(
+                "ai-translate node: model returned JSON that is not an object".into(),
+            ));
+        }
         let translated = parsed
             .get("translated")
             .cloned()

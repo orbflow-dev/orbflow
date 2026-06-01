@@ -14,9 +14,16 @@ use orbflow_core::ports::{
 use orbflow_mcp::client::McpClient;
 
 /// Validates that an MCP server URL does not point to private/internal addresses (SSRF protection).
-/// Allows localhost for MCP development servers.
 async fn validate_mcp_url(url: &str) -> Result<(), OrbflowError> {
-    crate::ssrf::validate_url_not_private_async(url, true).await
+    let parsed = url::Url::parse(url)
+        .map_err(|e| OrbflowError::InvalidNodeConfig(format!("mcp_tool: invalid URL: {e}")))?;
+    if parsed.scheme() != "https" {
+        return Err(OrbflowError::InvalidNodeConfig(
+            "mcp_tool: server_url must use HTTPS".into(),
+        ));
+    }
+
+    crate::ssrf::validate_url_not_private_async(url, false).await
 }
 
 /// Builtin node that calls an MCP tool on an external server.

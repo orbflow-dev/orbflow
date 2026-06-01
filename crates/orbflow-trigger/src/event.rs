@@ -36,6 +36,22 @@ impl EventBus {
 
     /// Subscribes a workflow to a named event.
     pub fn subscribe(&self, workflow_id: &WorkflowId, event_name: &str) {
+        let already_subscribed = self
+            .subscriptions
+            .entry(event_name.to_owned())
+            .or_default()
+            .iter()
+            .any(|id| id == workflow_id);
+
+        if already_subscribed {
+            info!(
+                workflow = %workflow_id,
+                event = %event_name,
+                "event subscription already registered"
+            );
+            return;
+        }
+
         self.subscriptions
             .entry(event_name.to_owned())
             .or_default()

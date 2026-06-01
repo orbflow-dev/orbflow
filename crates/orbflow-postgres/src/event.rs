@@ -76,6 +76,18 @@ impl EventStore for PgStore {
             .await
             .map_err(|e| OrbflowError::Database(format!("postgres: begin transaction: {e}")))?;
 
+        // Lock the parent instance row so concurrent appends for this instance
+        // cannot read the same previous hash before either insert commits.
+        sqlx::query("SELECT id FROM workflow_instances WHERE id = $1 FOR UPDATE")
+            .bind(&instance_id_str)
+            .execute(&mut *txn)
+            .await
+            .map_err(|e| {
+                OrbflowError::Database(format!(
+                    "postgres: lock instance {instance_id_str} for event append: {e}"
+                ))
+            })?;
+
         // Fetch the most recent event_hash for this instance (or use genesis).
         let prev_hash: String = sqlx::query_scalar::<_, Option<String>>(
             "SELECT event_hash FROM events WHERE instance_id = $1 ORDER BY id DESC LIMIT 1",
@@ -135,7 +147,10 @@ impl EventStore for PgStore {
     ) -> Result<Vec<DomainEvent>, OrbflowError> {
         let rows: Vec<EventRow> = sqlx::query_as(
             r#"SELECT id, instance_id, event_type, data, created_at
-               FROM events WHERE instance_id = $1 AND id > $2 ORDER BY id ASC"#,
+               FROM events
+               WHERE instance_id = $1
+                 AND (data->>'version')::BIGINT > $2
+               ORDER BY (data->>'version')::BIGINT ASC, id ASC"#,
         )
         .bind(instance_id.0.as_str())
         .bind(after_version)

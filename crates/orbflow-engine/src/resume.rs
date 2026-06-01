@@ -24,7 +24,7 @@ pub(crate) async fn resume_running(engine: &OrbflowEngine) -> Result<(), Orbflow
 
     info!(count = instances.len(), "resuming running instances");
 
-    for inst_summary in instances {
+    'instances: for inst_summary in instances {
         // Acquire per-instance mutex before re-fetching.
         let mu = engine.lock_instance(&inst_summary.id);
         let _guard = mu.lock().await;
@@ -58,6 +58,21 @@ pub(crate) async fn resume_running(engine: &OrbflowEngine) -> Result<(), Orbflow
                 continue;
             }
         };
+
+        if inst.saga.as_ref().is_some_and(|s| s.compensating) {
+            info!(
+                instance = %inst.id,
+                "re-driving incomplete compensation"
+            );
+            if let Err(e) = crate::saga::resume_compensation(engine, &mut inst, &wf).await {
+                error!(
+                    instance = %inst.id,
+                    error = %e,
+                    "failed to resume compensation"
+                );
+            }
+            continue;
+        }
 
         // Reset Queued/Running nodes back to Pending.
         for (node_id, ns) in inst.node_states.iter_mut() {
@@ -97,6 +112,27 @@ pub(crate) async fn resume_running(engine: &OrbflowEngine) -> Result<(), Orbflow
                         error = %e,
                         "failed to re-dispatch node"
                     );
+                    if let Err(mark_err) = engine
+                        .mark_node_dispatch_failed(&mut inst, node_id, &e)
+                        .await
+                    {
+                        error!(
+                            instance = %inst.id,
+                            node = node_id.as_str(),
+                            error = %mark_err,
+                            "failed to persist resume dispatch failure"
+                        );
+                    } else {
+                        engine.cascade_terminal_skips(&wf, &mut inst).await;
+                        if let Err(save_err) = engine.save_instance(&mut inst).await {
+                            error!(
+                                instance = %inst.id,
+                                error = %save_err,
+                                "failed to persist failed resume dispatch"
+                            );
+                        }
+                    }
+                    continue 'instances;
                 }
             }
         }

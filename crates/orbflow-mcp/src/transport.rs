@@ -47,6 +47,7 @@ fn shared_mcp_client() -> Result<&'static reqwest::Client, OrbflowError> {
     }
     let client = reqwest::Client::builder()
         .dns_resolver(Arc::new(McpSsrfSafeResolver))
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(60))
         .connect_timeout(std::time::Duration::from_secs(10))
         .build()

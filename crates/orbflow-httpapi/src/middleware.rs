@@ -196,10 +196,17 @@ pub async fn check_start_rate_limit(
 
 /// Paths that are always publicly accessible, regardless of auth configuration.
 ///
-/// NOTE: `/webhooks/` is intentionally excluded — webhook endpoints must validate
-/// payload signatures individually. Public access to `/webhooks/` would allow
-/// unauthenticated workflow execution.
-const PUBLIC_PATH_PREFIXES: &[&str] = &["/health", "/node-types", "/credential-types"];
+/// NOTE: `/webhooks/` is intentionally excluded — webhook endpoints enforce
+/// their own bearer-token or signature checks. Public access to `/webhooks/`
+/// would allow unauthenticated workflow execution.
+const PUBLIC_PATHS: &[&str] = &[
+    "/health",
+    "/api/v1/health",
+    "/node-types",
+    "/api/v1/node-types",
+    "/credential-types",
+    "/api/v1/credential-types",
+];
 
 /// Authenticated user identity stored in request extensions by the auth middleware.
 #[derive(Debug, Clone)]
@@ -225,7 +232,7 @@ pub async fn auth_middleware(
     };
 
     let path = req.uri().path();
-    if PUBLIC_PATH_PREFIXES.iter().any(|p| path.starts_with(p)) {
+    if PUBLIC_PATHS.contains(&path) {
         insert_user_identity(&mut req, trust_x_user_id);
         return next.run(req).await;
     }
@@ -316,8 +323,31 @@ pub fn check_permission(
     node_id: Option<&str>,
     bootstrap_admin: Option<&str>,
 ) -> Result<(), Response> {
+    if has_permission(
+        rbac_policy,
+        user_id,
+        permission,
+        workflow_id,
+        node_id,
+        bootstrap_admin,
+    )? {
+        Ok(())
+    } else {
+        Err(forbidden_response())
+    }
+}
+
+#[allow(clippy::result_large_err)]
+pub fn has_permission(
+    rbac_policy: &Option<Arc<RwLock<RbacPolicy>>>,
+    user_id: &str,
+    permission: Permission,
+    workflow_id: &str,
+    node_id: Option<&str>,
+    bootstrap_admin: Option<&str>,
+) -> Result<bool, Response> {
     let Some(policy_lock) = rbac_policy else {
-        return Ok(());
+        return Ok(true);
     };
 
     let policy = policy_lock.read().map_err(|_| {
@@ -331,14 +361,14 @@ pub fn check_permission(
 
     if policy.bindings.is_empty() {
         if bootstrap_admin.is_some_and(|admin| user_id == admin) {
-            return Ok(());
+            return Ok(true);
         }
-        return Err(forbidden_response());
+        return Ok(false);
     }
 
     if policy.has_permission(user_id, permission, workflow_id, node_id) {
-        Ok(())
+        Ok(true)
     } else {
-        Err(forbidden_response())
+        Ok(false)
     }
 }

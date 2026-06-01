@@ -158,8 +158,11 @@ impl BudgetStore for PgStore {
         let row: Option<BudgetRow> = sqlx::query_as(
             r#"SELECT id, workflow_id, team, period, limit_usd, current_usd, reset_at, created_at
                FROM budgets
-               WHERE workflow_id = $1
-               ORDER BY created_at ASC
+               WHERE workflow_id = $1 OR workflow_id IS NULL
+               ORDER BY
+                   CASE WHEN current_usd >= limit_usd THEN 0 ELSE 1 END,
+                   CASE WHEN workflow_id = $1 THEN 0 ELSE 1 END,
+                   created_at ASC
                LIMIT 1"#,
         )
         .bind(workflow_id)
@@ -175,16 +178,53 @@ impl BudgetStore for PgStore {
     }
 
     async fn increment_cost(&self, workflow_id: &str, cost_usd: f64) -> Result<(), OrbflowError> {
-        let result = sqlx::query(
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| OrbflowError::Database(format!("postgres: begin budget tx: {e}")))?;
+
+        let rows: Vec<BudgetRow> = sqlx::query_as(
+            r#"SELECT id, workflow_id, team, period, limit_usd, current_usd, reset_at, created_at
+               FROM budgets
+               WHERE workflow_id = $1 OR workflow_id IS NULL
+               ORDER BY CASE WHEN workflow_id = $1 THEN 0 ELSE 1 END, created_at ASC
+               FOR UPDATE"#,
+        )
+        .bind(workflow_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| {
+            OrbflowError::Database(format!(
+                "postgres: lock budgets for workflow '{workflow_id}': {e}"
+            ))
+        })?;
+
+        if rows.is_empty() {
+            tx.commit()
+                .await
+                .map_err(|e| OrbflowError::Database(format!("postgres: commit budget tx: {e}")))?;
+            return Ok(());
+        }
+
+        if let Some(row) = rows
+            .iter()
+            .find(|row| row.current_usd + cost_usd > row.limit_usd)
+        {
+            return Err(OrbflowError::BudgetExceeded(format!(
+                "Budget exceeded for workflow {workflow_id} by budget {} (attempted to add ${cost_usd:.2}: ${:.2} / ${:.2})",
+                row.id, row.current_usd, row.limit_usd
+            )));
+        }
+
+        sqlx::query(
             r#"UPDATE budgets
                SET current_usd = current_usd + $2
-               WHERE workflow_id = $1
-                 AND current_usd + $2 <= limit_usd
-               RETURNING id"#,
+               WHERE workflow_id = $1 OR workflow_id IS NULL"#,
         )
         .bind(workflow_id)
         .bind(cost_usd)
-        .fetch_optional(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| {
             OrbflowError::Database(format!(
@@ -192,11 +232,9 @@ impl BudgetStore for PgStore {
             ))
         })?;
 
-        if result.is_none() {
-            return Err(OrbflowError::BudgetExceeded(format!(
-                "Budget exceeded for workflow {workflow_id} (attempted to add ${cost_usd:.2})"
-            )));
-        }
+        tx.commit()
+            .await
+            .map_err(|e| OrbflowError::Database(format!("postgres: commit budget tx: {e}")))?;
 
         Ok(())
     }

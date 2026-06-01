@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createApiClient, type ApiClient } from "../client/api-client";
 import { useExecutionOverlayStore } from "../stores/execution-overlay-store";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
@@ -17,6 +18,10 @@ export interface UseExecutionPollingOptions {
   enabled: boolean;
   /** Base URL for the API. Required — no process.env fallback. */
   baseUrl: string;
+  /** Optional preconfigured API client. Use this when auth is managed by the host app. */
+  apiClient?: Pick<ApiClient, "instances">;
+  /** Optional bearer token used when the hook constructs its own API client. */
+  authToken?: string;
 }
 
 export interface UseExecutionPollingReturn {
@@ -28,7 +33,14 @@ export interface UseExecutionPollingReturn {
 export function useExecutionPolling(
   options: UseExecutionPollingOptions
 ): UseExecutionPollingReturn {
-  const { instanceId, interval = DEFAULT_INTERVAL, enabled, baseUrl } = options;
+  const {
+    instanceId,
+    interval = DEFAULT_INTERVAL,
+    enabled,
+    baseUrl,
+    apiClient,
+    authToken,
+  } = options;
 
   const [isPolling, setIsPolling] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -39,6 +51,14 @@ export function useExecutionPolling(
   const graceCountRef = useRef(0);
   const consecutiveErrorsRef = useRef(0);
   const instanceIdRef = useRef(instanceId);
+  const pollingClient = useMemo<Pick<ApiClient, "instances">>(
+    () =>
+      apiClient ??
+      createApiClient(
+        authToken ? { baseUrl, authToken } : baseUrl,
+      ),
+    [apiClient, authToken, baseUrl],
+  );
 
   // Keep instanceId ref in sync
   useEffect(() => {
@@ -66,16 +86,7 @@ export function useExecutionPolling(
     if (!currentInstanceId) return;
 
     try {
-      const res = await fetch(`${baseUrl}/instances/${currentInstanceId}`, {
-        headers: { "Content-Type": "application/json" },
-      });
-      const json = await res.json();
-
-      if (!res.ok || json.error) {
-        throw new Error(json.error || `HTTP ${res.status}`);
-      }
-
-      const instance = json.data;
+      const instance = await pollingClient.instances.get(currentInstanceId);
 
       // Reset error state on success
       consecutiveErrorsRef.current = 0;
@@ -114,7 +125,7 @@ export function useExecutionPolling(
         console.warn(`Poll error ${errorCount}/${ERROR_STOP_THRESHOLD}:`, err);
       }
     }
-  }, [baseUrl, stopPolling, clearPollingInterval]);
+  }, [pollingClient, stopPolling, clearPollingInterval]);
 
   useEffect(() => {
     // Clear any existing interval whenever dependencies change

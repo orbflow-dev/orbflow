@@ -322,11 +322,14 @@ async fn reload_worker_plugins(
             match loader.discover_grpc(&endpoints).await {
                 Ok(schemas) => {
                     loader.register_grpc(|name, exec| {
-                        if !worker.has_executor(name) {
-                            worker.register_node_dynamic(name, exec);
-                            tracing::info!(plugin_ref = %name, "hot-registered gRPC plugin executor");
-                            registered += 1;
-                        }
+                        let replaced = worker.has_executor(name);
+                        worker.register_node_dynamic(name, exec);
+                        tracing::info!(
+                            plugin_ref = %name,
+                            replaced,
+                            "hot-registered gRPC plugin executor"
+                        );
+                        registered += 1;
                     });
                     tracing::info!(
                         count = schemas.len(),

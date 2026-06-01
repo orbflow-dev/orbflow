@@ -66,6 +66,36 @@ fn is_binary_content_type(ct: &str) -> bool {
         .any(|prefix| ct.starts_with(prefix))
 }
 
+async fn read_body_with_cap(
+    mut resp: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, OrbflowError> {
+    if let Some(content_len) = resp.content_length()
+        && content_len > max_bytes as u64
+    {
+        return Err(OrbflowError::InvalidNodeConfig(format!(
+            "http node: response body exceeds maximum size ({content_len} > {max_bytes} bytes)"
+        )));
+    }
+
+    let mut body = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| OrbflowError::Internal(format!("http node: read body: {e}")))?
+    {
+        let next_len = body.len().saturating_add(chunk.len());
+        if next_len > max_bytes {
+            return Err(OrbflowError::InvalidNodeConfig(format!(
+                "http node: response body exceeds maximum size ({next_len} > {max_bytes} bytes)"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    Ok(body)
+}
+
 /// Executes an HTTP request.
 pub struct HttpNode;
 
@@ -276,17 +306,8 @@ impl NodeExecutor for HttpNode {
             .unwrap_or("")
             .to_owned();
 
-        // Read body with size limit.
-        let body_bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| OrbflowError::Internal(format!("http node: read body: {e}")))?;
-
-        let body_bytes = if body_bytes.len() > MAX_BODY_SIZE {
-            &body_bytes[..MAX_BODY_SIZE]
-        } else {
-            &body_bytes[..]
-        };
+        // Read body with an enforced cap instead of buffering unbounded data.
+        let body_bytes = read_body_with_cap(resp, MAX_BODY_SIZE).await?;
 
         let body_value = if is_binary_content_type(&content_type) {
             // Binary responses: store metadata only.
@@ -296,11 +317,11 @@ impl NodeExecutor for HttpNode {
                 "size_bytes": body_bytes.len(),
             })
         } else {
-            let body_str = String::from_utf8_lossy(body_bytes);
+            let body_str = String::from_utf8_lossy(&body_bytes);
             let trimmed = body_str.trim();
             if !trimmed.is_empty() && (trimmed.starts_with('{') || trimmed.starts_with('[')) {
                 // Try to parse JSON body so downstream nodes get structured data.
-                match serde_json::from_slice::<Value>(body_bytes) {
+                match serde_json::from_slice::<Value>(&body_bytes) {
                     Ok(parsed) => parsed,
                     Err(_) => Value::String(body_str.into_owned()),
                 }

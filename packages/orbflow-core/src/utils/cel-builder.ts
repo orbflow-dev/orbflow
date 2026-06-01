@@ -6,6 +6,35 @@ import type {
 } from "../types/schema";
 import { isConditionGroup } from "../types/schema";
 
+const CEL_IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Escape a JavaScript string as a CEL double-quoted string literal. */
+export function escapeCelStringLiteral(value: string): string {
+  return JSON.stringify(value);
+}
+
+/** Append a field accessor, using bracket notation for non-identifier keys. */
+export function appendCelFieldAccess(prefix: string, key: string): string {
+  return CEL_IDENTIFIER_RE.test(key)
+    ? `${prefix}.${key}`
+    : `${prefix}[${escapeCelStringLiteral(key)}]`;
+}
+
+/** Build a CEL path rooted at nodes["..."], escaping node IDs and field keys. */
+export function buildNodeCelPath(nodeId: string, sourcePath?: string): string {
+  const root = `nodes[${escapeCelStringLiteral(nodeId)}]`;
+  if (!sourcePath) return root;
+
+  return sourcePath
+    .split(".")
+    .filter(Boolean)
+    .reduce((path, key) => appendCelFieldAccess(path, key), root);
+}
+
+function formatCelLiteral(value: string | number | boolean): string {
+  return typeof value === "string" ? escapeCelStringLiteral(value) : String(value);
+}
+
 /**
  * Build a value string for a node's input_mapping field.
  * Values starting with "=" are treated as CEL by the engine (orbflow-engine).
@@ -21,15 +50,15 @@ export function buildMappingExpression(mapping: FieldMapping): string {
       : JSON.stringify(mapping.staticValue);
   }
 
-  // Expression mode: reference upstream node output via CEL
-  if (mapping.sourceNodeId && mapping.sourcePath) {
-    return `=nodes["${mapping.sourceNodeId}"].${mapping.sourcePath}`;
-  }
-
   if (mapping.celExpression) {
     return mapping.celExpression.startsWith("=")
       ? mapping.celExpression
       : `=${mapping.celExpression}`;
+  }
+
+  // Expression mode: reference upstream node output via CEL
+  if (mapping.sourceNodeId && mapping.sourcePath) {
+    return `=${buildNodeCelPath(mapping.sourceNodeId, mapping.sourcePath)}`;
   }
 
   return "";
@@ -77,8 +106,7 @@ function buildGroupExpression(group: ConditionGroup): string {
 
 function buildRuleExpression(rule: ConditionRule): string {
   const { field, operator, value } = rule;
-  const formattedValue =
-    typeof value === "string" ? `"${value}"` : String(value);
+  const formattedValue = formatCelLiteral(value);
 
   const ops: Record<CelOperator, string> = {
     "==": `${field} == ${formattedValue}`,

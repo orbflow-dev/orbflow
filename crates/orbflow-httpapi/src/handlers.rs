@@ -4,6 +4,8 @@
 //! HTTP route handlers for the Orbflow REST API.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
 use axum::Json;
@@ -28,7 +30,30 @@ use tracing::{debug, error};
 use uuid::Uuid;
 
 use crate::errors::{write_data, write_error, write_list, write_safe_error};
-use crate::middleware::{AuthUser, StartRateLimiter, check_permission};
+use crate::middleware::{AuthUser, StartRateLimiter, check_permission, has_permission};
+
+/// HTTP-facing trigger registry adapter.
+///
+/// The HTTP API owns workflow CRUD and event ingress, while the concrete
+/// trigger manager lives in `orbflow-trigger`. Keeping this as a small port
+/// avoids making the API crate depend on the trigger crate.
+pub trait TriggerRegistry: Send + Sync {
+    fn refresh_workflow<'a>(
+        &'a self,
+        workflow: &'a orbflow_core::Workflow,
+    ) -> Pin<Box<dyn Future<Output = Result<(), OrbflowError>> + Send + 'a>>;
+
+    fn unregister_workflow<'a>(
+        &'a self,
+        workflow_id: &'a WorkflowId,
+    ) -> Pin<Box<dyn Future<Output = Result<(), OrbflowError>> + Send + 'a>>;
+
+    fn emit_event<'a>(
+        &'a self,
+        event_name: &'a str,
+        payload: HashMap<String, serde_json::Value>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), OrbflowError>> + Send + 'a>>;
+}
 
 /// Shared application state for all handlers.
 #[derive(Clone)]
@@ -67,6 +92,8 @@ pub struct AppState {
     pub plugins_dir: Option<String>,
     /// Shared HTTP client for plugin downloads (connection pool reuse).
     pub http_client: reqwest::Client,
+    /// Optional trigger registry for workflow CRUD refresh and event ingress.
+    pub trigger_registry: Option<Arc<dyn TriggerRegistry>>,
 }
 
 // --- Pagination ---
@@ -92,6 +119,85 @@ impl PaginationParams {
         }
         ListOptions { offset, limit }
     }
+}
+
+#[allow(clippy::result_large_err)]
+async fn refresh_workflow_triggers(
+    state: &AppState,
+    wf: &orbflow_core::Workflow,
+) -> Result<(), Response> {
+    let Some(registry) = &state.trigger_registry else {
+        return Ok(());
+    };
+
+    registry.refresh_workflow(wf).await.map_err(|e| {
+        error!(workflow = %wf.id, error = %e, "failed to refresh workflow trigger registrations");
+        write_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to refresh workflow triggers",
+        )
+    })
+}
+
+#[allow(clippy::result_large_err)]
+async fn unregister_workflow_triggers(
+    state: &AppState,
+    wf_id: &WorkflowId,
+) -> Result<(), Response> {
+    let Some(registry) = &state.trigger_registry else {
+        return Ok(());
+    };
+
+    registry.unregister_workflow(wf_id).await.map_err(|e| {
+        error!(workflow = %wf_id, error = %e, "failed to unregister workflow trigger registrations");
+        write_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to unregister workflow triggers",
+        )
+    })
+}
+
+#[allow(clippy::result_large_err)]
+async fn load_instance_for_permission(
+    state: &AppState,
+    id: &str,
+    action: &str,
+) -> Result<orbflow_core::Instance, Response> {
+    let inst_id = orbflow_core::InstanceId::new(id);
+    match state.engine.get_instance(&inst_id).await {
+        Ok(inst) => Ok(inst),
+        Err(OrbflowError::NotFound) => {
+            Err(write_error(StatusCode::NOT_FOUND, "instance not found"))
+        }
+        Err(e) => {
+            error!(error = %e, action, "failed to get instance for authorization");
+            Err(write_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to get instance",
+            ))
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn authorize_instance(
+    state: &AppState,
+    auth_user: &AuthUser,
+    id: &str,
+    permission: Permission,
+    node_id: Option<&str>,
+    action: &str,
+) -> Result<orbflow_core::Instance, Response> {
+    let inst = load_instance_for_permission(state, id, action).await?;
+    check_permission(
+        &state.rbac,
+        &auth_user.user_id,
+        permission,
+        &inst.workflow_id.0,
+        node_id,
+        state.bootstrap_admin.as_deref(),
+    )?;
+    Ok(inst)
 }
 
 // --- Health ---
@@ -141,7 +247,22 @@ pub async fn create_workflow(
     wf.updated_at = now;
 
     match state.engine.create_workflow(&wf).await {
-        Ok(()) => write_data(StatusCode::CREATED, wf),
+        Ok(()) => {
+            let created = match state.engine.get_workflow(&wf.id).await {
+                Ok(saved) => saved,
+                Err(e) => {
+                    error!(workflow = %wf.id, error = %e, "failed to reload created workflow");
+                    return write_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "failed to reload created workflow",
+                    );
+                }
+            };
+            if let Err(resp) = refresh_workflow_triggers(&state, &created).await {
+                return resp;
+            }
+            write_data(StatusCode::CREATED, created)
+        }
         Err(e) => {
             if e.is_validation_error() {
                 return write_error(StatusCode::BAD_REQUEST, e.to_string());
@@ -230,7 +351,22 @@ pub async fn update_workflow(
 
     wf.id = orbflow_core::WorkflowId::new(id);
     match state.engine.update_workflow(&wf).await {
-        Ok(()) => write_data(StatusCode::OK, wf),
+        Ok(()) => {
+            let updated = match state.engine.get_workflow(&wf.id).await {
+                Ok(saved) => saved,
+                Err(e) => {
+                    error!(workflow = %wf.id, error = %e, "failed to reload updated workflow");
+                    return write_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "failed to reload updated workflow",
+                    );
+                }
+            };
+            if let Err(resp) = refresh_workflow_triggers(&state, &updated).await {
+                return resp;
+            }
+            write_data(StatusCode::OK, updated)
+        }
         Err(OrbflowError::NotFound) => write_error(StatusCode::NOT_FOUND, "workflow not found"),
         Err(OrbflowError::Conflict) => {
             write_error(StatusCode::CONFLICT, "version conflict — reload and retry")
@@ -266,7 +402,12 @@ pub async fn delete_workflow(
 
     let wf_id = orbflow_core::WorkflowId::new(id);
     match state.engine.delete_workflow(&wf_id).await {
-        Ok(()) => write_data(StatusCode::OK, serde_json::json!({ "deleted": true })),
+        Ok(()) => {
+            if let Err(resp) = unregister_workflow_triggers(&state, &wf_id).await {
+                return resp;
+            }
+            write_data(StatusCode::OK, serde_json::json!({ "deleted": true }))
+        }
         Err(OrbflowError::NotFound) => write_error(StatusCode::NOT_FOUND, "workflow not found"),
         Err(e) => {
             error!(error = %e, "failed to delete workflow");
@@ -301,9 +442,14 @@ pub async fn start_workflow(
     }
 
     let wf_id = orbflow_core::WorkflowId::new(id);
-    match state.engine.start_workflow(&wf_id, input).await {
+    match state
+        .engine
+        .start_workflow_for_owner(&wf_id, input, &auth_user.user_id)
+        .await
+    {
         Ok(inst) => write_data(StatusCode::OK, inst),
         Err(OrbflowError::NotFound) => write_error(StatusCode::NOT_FOUND, "workflow not found"),
+        Err(OrbflowError::Forbidden(msg)) => write_error(StatusCode::FORBIDDEN, msg),
         Err(e) => {
             if e.is_validation_error() {
                 return write_error(StatusCode::BAD_REQUEST, e.to_string());
@@ -374,17 +520,31 @@ pub async fn test_node(
     }
 }
 
-// --- Instances ---
-
-pub async fn list_instances(
+/// `POST /events/{event_name}`
+///
+/// Authenticated ingress for event triggers. The event may fan out to many
+/// workflows, so callers need global execute permission when RBAC is enabled.
+pub async fn emit_event_trigger(
     State(state): State<AppState>,
     axum::Extension(auth_user): axum::Extension<AuthUser>,
-    Query(params): Query<PaginationParams>,
+    Path(event_name): Path<String>,
+    Json(payload): Json<HashMap<String, serde_json::Value>>,
 ) -> Response {
+    let event_name = event_name.trim();
+    if event_name.is_empty() {
+        return write_error(StatusCode::BAD_REQUEST, "event_name is required");
+    }
+    if event_name.len() > 256 {
+        return write_error(
+            StatusCode::BAD_REQUEST,
+            "event_name must not exceed 256 characters",
+        );
+    }
+
     if let Err(resp) = check_permission(
         &state.rbac,
         &auth_user.user_id,
-        Permission::View,
+        Permission::Execute,
         "*",
         None,
         state.bootstrap_admin.as_deref(),
@@ -392,9 +552,58 @@ pub async fn list_instances(
         return resp;
     }
 
+    let Some(registry) = &state.trigger_registry else {
+        return write_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "trigger manager not available",
+        );
+    };
+
+    match registry.emit_event(event_name, payload).await {
+        Ok(()) => write_data(
+            StatusCode::ACCEPTED,
+            serde_json::json!({"status": "accepted", "event_name": event_name}),
+        ),
+        Err(e) => {
+            error!(event = %event_name, error = %e, "failed to emit event trigger");
+            write_error(StatusCode::INTERNAL_SERVER_ERROR, "failed to emit event")
+        }
+    }
+}
+
+// --- Instances ---
+
+pub async fn list_instances(
+    State(state): State<AppState>,
+    axum::Extension(auth_user): axum::Extension<AuthUser>,
+    Query(params): Query<PaginationParams>,
+) -> Response {
     let opts = params.to_list_options();
     match state.engine.list_instances(opts.clone()).await {
-        Ok((instances, total)) => write_list(instances, total, opts.offset, opts.limit),
+        Ok((instances, total)) => {
+            let original_count = instances.len();
+            let mut visible = Vec::with_capacity(original_count);
+            for inst in instances {
+                match has_permission(
+                    &state.rbac,
+                    &auth_user.user_id,
+                    Permission::View,
+                    &inst.workflow_id.0,
+                    None,
+                    state.bootstrap_admin.as_deref(),
+                ) {
+                    Ok(true) => visible.push(inst),
+                    Ok(false) => {}
+                    Err(resp) => return resp,
+                }
+            }
+            let visible_total = if visible.len() == original_count {
+                total
+            } else {
+                visible.len() as i64
+            };
+            write_list(visible, visible_total, opts.offset, opts.limit)
+        }
         Err(e) => {
             error!(error = %e, "failed to list instances");
             write_error(
@@ -410,25 +619,18 @@ pub async fn get_instance(
     axum::Extension(auth_user): axum::Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Response {
-    if let Err(resp) = check_permission(
-        &state.rbac,
-        &auth_user.user_id,
+    match authorize_instance(
+        &state,
+        &auth_user,
+        &id,
         Permission::View,
-        "*",
         None,
-        state.bootstrap_admin.as_deref(),
-    ) {
-        return resp;
-    }
-
-    let inst_id = orbflow_core::InstanceId::new(id);
-    match state.engine.get_instance(&inst_id).await {
+        "get_instance",
+    )
+    .await
+    {
         Ok(inst) => write_data(StatusCode::OK, inst),
-        Err(OrbflowError::NotFound) => write_error(StatusCode::NOT_FOUND, "instance not found"),
-        Err(e) => {
-            error!(error = %e, "failed to get instance");
-            write_error(StatusCode::INTERNAL_SERVER_ERROR, "failed to get instance")
-        }
+        Err(resp) => resp,
     }
 }
 
@@ -437,14 +639,16 @@ pub async fn cancel_instance(
     axum::Extension(auth_user): axum::Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Response {
-    if let Err(resp) = check_permission(
-        &state.rbac,
-        &auth_user.user_id,
+    if let Err(resp) = authorize_instance(
+        &state,
+        &auth_user,
+        &id,
         Permission::Execute,
-        "*",
         None,
-        state.bootstrap_admin.as_deref(),
-    ) {
+        "cancel_instance",
+    )
+    .await
+    {
         return resp;
     }
 
@@ -852,17 +1056,6 @@ pub async fn stream_node(
     axum::Extension(auth_user): axum::Extension<AuthUser>,
     Path(params): Path<StreamPathParams>,
 ) -> Response {
-    if let Err(resp) = check_permission(
-        &state.rbac,
-        &auth_user.user_id,
-        Permission::View,
-        "*",
-        Some(&params.node_id),
-        state.bootstrap_admin.as_deref(),
-    ) {
-        return resp;
-    }
-
     let bus = match &state.bus {
         Some(b) => Arc::clone(b),
         None => {
@@ -874,19 +1067,17 @@ pub async fn stream_node(
     };
 
     // Verify the instance exists before subscribing to prevent IDOR.
-    let inst_id = orbflow_core::InstanceId::new(&params.instance_id);
-    match state.engine.get_instance(&inst_id).await {
-        Ok(_) => {}
-        Err(OrbflowError::NotFound) => {
-            return write_error(StatusCode::NOT_FOUND, "instance not found");
-        }
-        Err(e) => {
-            error!(error = %e, "failed to verify instance for stream");
-            return write_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to verify instance",
-            );
-        }
+    if let Err(resp) = authorize_instance(
+        &state,
+        &auth_user,
+        &params.instance_id,
+        Permission::View,
+        Some(&params.node_id),
+        "stream_node",
+    )
+    .await
+    {
+        return resp;
     }
 
     let subject = stream_subject(&params.instance_id, &params.node_id);
@@ -1160,14 +1351,16 @@ pub async fn get_instance_metrics(
     axum::Extension(auth_user): axum::Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Response {
-    if let Err(resp) = check_permission(
-        &state.rbac,
-        &auth_user.user_id,
+    if let Err(resp) = authorize_instance(
+        &state,
+        &auth_user,
+        &id,
         Permission::View,
-        "*",
         None,
-        state.bootstrap_admin.as_deref(),
-    ) {
+        "get_instance_metrics",
+    )
+    .await
+    {
         return resp;
     }
 
@@ -1193,14 +1386,16 @@ pub async fn verify_instance_audit(
     axum::Extension(auth_user): axum::Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Response {
-    if let Err(resp) = check_permission(
-        &state.rbac,
-        &auth_user.user_id,
+    if let Err(resp) = authorize_instance(
+        &state,
+        &auth_user,
+        &id,
         Permission::View,
-        "*",
         None,
-        state.bootstrap_admin.as_deref(),
-    ) {
+        "verify_instance_audit",
+    )
+    .await
+    {
         return resp;
     }
 
@@ -1233,14 +1428,16 @@ pub async fn get_audit_trail(
     axum::Extension(auth_user): axum::Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Response {
-    if let Err(resp) = check_permission(
-        &state.rbac,
-        &auth_user.user_id,
+    if let Err(resp) = authorize_instance(
+        &state,
+        &auth_user,
+        &id,
         Permission::View,
-        "*",
         None,
-        state.bootstrap_admin.as_deref(),
-    ) {
+        "get_audit_trail",
+    )
+    .await
+    {
         return resp;
     }
 
@@ -1266,14 +1463,16 @@ pub async fn get_audit_proof(
     axum::Extension(auth_user): axum::Extension<AuthUser>,
     Path((id, event_index)): Path<(String, usize)>,
 ) -> Response {
-    if let Err(resp) = check_permission(
-        &state.rbac,
-        &auth_user.user_id,
+    if let Err(resp) = authorize_instance(
+        &state,
+        &auth_user,
+        &id,
         Permission::View,
-        "*",
         None,
-        state.bootstrap_admin.as_deref(),
-    ) {
+        "get_audit_proof",
+    )
+    .await
+    {
         return resp;
     }
 
@@ -1338,14 +1537,16 @@ pub async fn export_audit_trail(
     Path(id): Path<String>,
     Query(params): Query<AuditExportParams>,
 ) -> Response {
-    if let Err(resp) = check_permission(
-        &state.rbac,
-        &auth_user.user_id,
+    if let Err(resp) = authorize_instance(
+        &state,
+        &auth_user,
+        &id,
         Permission::View,
-        "*",
         None,
-        state.bootstrap_admin.as_deref(),
-    ) {
+        "export_audit_trail",
+    )
+    .await
+    {
         return resp;
     }
 
@@ -3487,7 +3688,23 @@ pub async fn merge_change_request(
         .merge_change_request(&params.cr_id, cr.base_version, &cr.proposed_definition)
         .await
     {
-        Ok(()) => write_data(StatusCode::OK, serde_json::json!({"status": "merged"})),
+        Ok(()) => {
+            let wf_id = WorkflowId::new(&params.id);
+            let workflow = match state.engine.get_workflow(&wf_id).await {
+                Ok(wf) => wf,
+                Err(e) => {
+                    error!(workflow = %wf_id, error = %e, "failed to reload workflow after merge");
+                    return write_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "failed to reload merged workflow",
+                    );
+                }
+            };
+            if let Err(resp) = refresh_workflow_triggers(&state, &workflow).await {
+                return resp;
+            }
+            write_data(StatusCode::OK, serde_json::json!({"status": "merged"}))
+        }
         Err(OrbflowError::NotFound) => write_error(
             StatusCode::NOT_FOUND,
             "workflow or change request not found",

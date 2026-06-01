@@ -3,6 +3,7 @@
 import { useState, useMemo } from "react";
 import type { FieldSchema } from "../../types/schema";
 import type { UpstreamOutput } from "../../utils/upstream";
+import { appendCelFieldAccess, buildNodeCelPath } from "@orbflow/core/utils";
 import { NodeIcon } from "../icons";
 
 const TYPE_COLORS: Record<string, string> = {
@@ -155,7 +156,7 @@ function NodeBranch({
               field={field}
               nodeId={node.nodeId}
               parentPath=""
-              celPrefix={`nodes["${node.nodeId}"]`}
+              celPrefix={buildNodeCelPath(node.nodeId)}
               selectedPath={selectedPath}
               onSelect={onSelect}
             />
@@ -183,7 +184,7 @@ function FieldLeaf({
 }) {
   const [open, setOpen] = useState(false);
   const path = parentPath ? `${parentPath}.${field.key}` : field.key;
-  const celPath = `${celPrefix}.${field.key}`;
+  const celPath = appendCelFieldAccess(celPrefix, field.key);
   const isSelected = selectedPath === celPath;
   const hasChildren = field.children && field.children.length > 0;
 

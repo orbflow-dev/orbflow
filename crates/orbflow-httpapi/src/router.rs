@@ -97,6 +97,21 @@ pub struct HttpApiOptions {
 /// - Per-user rate limiting via tower-governor (tiered: read/write/sensitive)
 /// - All workflow, instance, and credential CRUD routes
 pub fn create_router(opts: HttpApiOptions) -> Result<Router, orbflow_core::OrbflowError> {
+    create_router_inner(opts, None)
+}
+
+/// Creates the Axum [`Router`] with an optional trigger registry adapter.
+pub fn create_router_with_trigger_registry(
+    opts: HttpApiOptions,
+    trigger_registry: Option<Arc<dyn handlers::TriggerRegistry>>,
+) -> Result<Router, orbflow_core::OrbflowError> {
+    create_router_inner(opts, trigger_registry)
+}
+
+fn create_router_inner(
+    opts: HttpApiOptions,
+    trigger_registry: Option<Arc<dyn handlers::TriggerRegistry>>,
+) -> Result<Router, orbflow_core::OrbflowError> {
     // trust_x_user_id is only safe when auth is also configured — without auth,
     // any caller can forge their identity via the X-User-Id header.
 
@@ -119,6 +134,7 @@ pub fn create_router(opts: HttpApiOptions) -> Result<Router, orbflow_core::Orbfl
         plugin_manager: opts.plugin_manager,
         plugins_dir: opts.plugins_dir,
         http_client: reqwest::Client::new(),
+        trigger_registry,
     };
 
     // ── Read-only routes (STANDARD rate limit) ──────────────────────────────
@@ -198,6 +214,7 @@ pub fn create_router(opts: HttpApiOptions) -> Result<Router, orbflow_core::Orbfl
         .route("/workflows/{id}", delete(handlers::delete_workflow))
         .route("/workflows/{id}/start", post(handlers::start_workflow))
         .route("/workflows/{id}/test-node", post(handlers::test_node))
+        .route("/events/{event_name}", post(handlers::emit_event_trigger))
         .route("/workflows/{id}/test-suite", post(handlers::run_test_suite))
         .route(
             "/workflows/{id}/test-coverage",

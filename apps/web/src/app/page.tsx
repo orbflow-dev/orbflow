@@ -256,13 +256,14 @@ export default function Home() {
       onSave: async (wf) => {
         if (wf.id) {
           const updated = await api.workflows.update(wf.id, wf);
+          await fetchWorkflows();
+          await selectWorkflow(updated.id);
           return updated;
         }
         const created = await api.workflows.create(wf);
-        // Refresh the workflow list so new workflow appears in dropdown
-        fetchWorkflows().catch(() => { /* store handles toast */ });
-        // Auto-select the newly created workflow (fire-and-forget to avoid remounting mid-save)
-        selectWorkflow(created.id);
+        // Keep the sidebar/dropdowns and selected workflow in sync with the saved backend copy.
+        await fetchWorkflows();
+        await selectWorkflow(created.id);
         return created;
       },
       onRun: async (wf) => {

@@ -7,6 +7,8 @@
 //! plugins, triggers, HTTP API (Axum), optional gRPC, graceful shutdown.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
 use orbflow_builtins::register_builtins;
@@ -18,7 +20,9 @@ use orbflow_core::ports::{
 };
 use orbflow_engine::{OrbflowEngine, SUB_WORKFLOW_PLUGIN_REF, SubWorkflowExecutor};
 use orbflow_grpcapi::GrpcServer;
-use orbflow_httpapi::{HttpApiOptions, create_router};
+use orbflow_httpapi::{
+    HttpApiOptions, TriggerRegistry, create_router, create_router_with_trigger_registry,
+};
 use orbflow_natsbus::NatsBus;
 use orbflow_plugin::{ManagedPlugins, PluginLoader, PluginProcessManager};
 use orbflow_postgres::{PgStore, PgStoreOptions};
@@ -143,9 +147,10 @@ async fn main() {
     });
 
     // --- Trigger manager ---
-    let trigger_mgr = match TriggerManager::new(
+    let trigger_mgr = match TriggerManager::new_with_auth(
         engine.clone() as Arc<dyn Engine>,
         store.clone() as Arc<dyn orbflow_core::ports::WorkflowStore>,
+        cfg.server.auth_token.clone(),
     )
     .await
     {
@@ -179,6 +184,9 @@ async fn main() {
 
     let (plugin_index, plugin_installer) = build_plugin_index(&cfg.plugins.dir);
     let plugin_manager = build_plugin_manager(&cfg.plugins.dir);
+    let trigger_registry: Arc<dyn TriggerRegistry> = Arc::new(TriggerRegistryAdapter {
+        manager: trigger_mgr.clone(),
+    });
 
     let http_opts = build_http_options(
         engine.clone(),
@@ -193,10 +201,11 @@ async fn main() {
         Some(plugin_manager.clone()),
     );
 
-    let app = create_router(http_opts).unwrap_or_else(|e| {
-        tracing::error!("failed to create HTTP router: {e}");
-        std::process::exit(1);
-    });
+    let app = create_router_with_trigger_registry(http_opts, Some(trigger_registry))
+        .unwrap_or_else(|e| {
+            tracing::error!("failed to create HTTP router: {e}");
+            std::process::exit(1);
+        });
     let app = app.merge(trigger_mgr.lock().await.webhook_router());
 
     let http_addr = format!("{}:{}", cfg.server.host, cfg.server.port);
@@ -284,6 +293,9 @@ async fn start_http_only(
     bus: Arc<NatsBus>,
     store: Arc<PgStore>,
 ) {
+    let rbac_store: Arc<dyn RbacStore> = store.clone() as Arc<dyn RbacStore>;
+    let rbac_policy_arc = setup_rbac(&rbac_store).await;
+
     let (plugin_index, plugin_installer) = build_plugin_index(&cfg.plugins.dir);
     let plugin_manager = build_plugin_manager(&cfg.plugins.dir);
 
@@ -293,8 +305,8 @@ async fn start_http_only(
         cfg,
         &bus,
         &store,
-        None,
-        Some(store.clone() as Arc<dyn RbacStore>),
+        rbac_policy_arc,
+        Some(rbac_store),
         plugin_index,
         plugin_installer,
         Some(plugin_manager),
@@ -395,9 +407,59 @@ fn build_http_options(
     }
 }
 
+struct TriggerRegistryAdapter {
+    manager: Arc<tokio::sync::Mutex<TriggerManager>>,
+}
+
+impl TriggerRegistry for TriggerRegistryAdapter {
+    fn refresh_workflow<'a>(
+        &'a self,
+        workflow: &'a orbflow_core::Workflow,
+    ) -> Pin<Box<dyn Future<Output = Result<(), orbflow_core::OrbflowError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.manager
+                .lock()
+                .await
+                .refresh_workflow_from_def(workflow)
+                .await;
+            Ok(())
+        })
+    }
+
+    fn unregister_workflow<'a>(
+        &'a self,
+        workflow_id: &'a orbflow_core::WorkflowId,
+    ) -> Pin<Box<dyn Future<Output = Result<(), orbflow_core::OrbflowError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.manager
+                .lock()
+                .await
+                .unregister_workflow(workflow_id)
+                .await;
+            Ok(())
+        })
+    }
+
+    fn emit_event<'a>(
+        &'a self,
+        event_name: &'a str,
+        payload: HashMap<String, serde_json::Value>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), orbflow_core::OrbflowError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.manager
+                .lock()
+                .await
+                .emit_event(event_name, payload)
+                .await;
+            Ok(())
+        })
+    }
+}
+
 /// Loads the RBAC policy from the database and spawns a background reload task.
 ///
-/// Returns `Some(policy)` when roles or bindings exist, `None` otherwise.
+/// Returns `Some(policy)` when roles or bindings exist, `Some(empty policy)` on
+/// load errors to fail closed, and `None` only when RBAC is cleanly unconfigured.
 /// The background task refreshes the policy every 30 seconds so that changes
 /// made by other server instances are picked up without a restart.
 async fn setup_rbac(
@@ -419,8 +481,10 @@ async fn setup_rbac(
             None
         }
         Err(e) => {
-            tracing::warn!("failed to load RBAC policy, RBAC disabled: {e}");
-            None
+            tracing::error!("failed to load RBAC policy; RBAC will fail closed: {e}");
+            Some(Arc::new(RwLock::new(
+                orbflow_core::rbac::RbacPolicy::with_defaults(),
+            )))
         }
     };
 

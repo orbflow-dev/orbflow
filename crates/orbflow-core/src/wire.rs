@@ -14,6 +14,8 @@ use crate::execution::InstanceId;
 pub struct TaskMessage {
     pub instance_id: InstanceId,
     pub node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_id: Option<String>,
     pub plugin_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<HashMap<String, serde_json::Value>>,
@@ -40,6 +42,10 @@ pub struct ResultMessage {
     pub result_id: Option<String>,
     pub instance_id: InstanceId,
     pub node_id: String,
+    #[serde(default)]
+    pub attempt: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<HashMap<String, serde_json::Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -55,6 +61,15 @@ pub struct ResultMessage {
 /// Current wire format version for bus messages.
 pub const WIRE_VERSION: u8 = 1;
 
+/// Stable identity for a single dispatch attempt.
+///
+/// The engine derives this from durable state (`instance_id`, `node_id`, and
+/// `attempt`) so crash recovery can reject stale worker results without adding
+/// another persisted field to every node state.
+pub fn dispatch_identity(instance_id: &InstanceId, node_id: &str, attempt: i32) -> String {
+    format!("{}:{node_id}:{attempt}", instance_id.0)
+}
+
 fn default_wire_version() -> u8 {
     WIRE_VERSION
 }
@@ -68,6 +83,7 @@ mod tests {
         let msg = TaskMessage {
             instance_id: InstanceId::new("inst-1"),
             node_id: "node-1".into(),
+            dispatch_id: Some(dispatch_identity(&InstanceId::new("inst-1"), "node-1", 1)),
             plugin_ref: "builtin:http".into(),
             config: Some(HashMap::from([(
                 "url".into(),
@@ -93,6 +109,8 @@ mod tests {
             result_id: Some("r-1".into()),
             instance_id: InstanceId::new("inst-1"),
             node_id: "node-1".into(),
+            attempt: 1,
+            dispatch_id: Some(dispatch_identity(&InstanceId::new("inst-1"), "node-1", 1)),
             output: Some(HashMap::from([("status".into(), serde_json::json!(200))])),
             error: None,
             trace_context: None,
@@ -113,6 +131,7 @@ mod tests {
         let msg = TaskMessage {
             instance_id: InstanceId::new("inst-1"),
             node_id: "node-1".into(),
+            dispatch_id: Some(dispatch_identity(&InstanceId::new("inst-1"), "node-1", 1)),
             plugin_ref: "builtin:http".into(),
             config: None,
             input: None,

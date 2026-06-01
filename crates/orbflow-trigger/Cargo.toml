@@ -23,4 +23,5 @@ uuid = { workspace = true }
 dashmap = { workspace = true }
 
 [dev-dependencies]
+chrono = { workspace = true }
 tokio-test = { workspace = true }

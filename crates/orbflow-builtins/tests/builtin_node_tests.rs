@@ -161,6 +161,18 @@ async fn template_go_style_syntax() {
 }
 
 #[tokio::test]
+async fn template_renders_unicode_without_corruption() {
+    let r = runner();
+    let test = NodeTestCase::new("builtin:template")
+        .with_name("unicode template")
+        .with_config("template", json!("Hello {{ name }} - مرحبا {{ emoji }}"))
+        .with_config("variables", json!({"name": "Orbflow", "emoji": "🚀"}))
+        .expect_output("result", json!("Hello Orbflow - مرحبا 🚀"));
+    let outcome = r.run_test(&test).await;
+    assert!(outcome.passed, "outcome: {outcome:?}");
+}
+
+#[tokio::test]
 async fn template_missing_template_fails() {
     let r = runner();
     let test = NodeTestCase::new("builtin:template")

@@ -125,7 +125,7 @@ async fn test_dispatch_includes_resolved_secret_credentials_for_worker_execution
             credential_type: "openai".into(),
             data: cred_data,
             description: None,
-            owner_id: None,
+            owner_id: Some("alice".into()),
             access_tier: Default::default(),
             policy: None,
             created_at: Utc::now(),
@@ -150,9 +150,10 @@ async fn test_dispatch_includes_resolved_secret_credentials_for_worker_execution
 
     engine.create_workflow(&wf).await.unwrap();
     engine
-        .start_workflow(
+        .start_workflow_for_owner(
             &WorkflowId::new("wf-cred"),
             std::collections::HashMap::new(),
+            "alice",
         )
         .await
         .unwrap();

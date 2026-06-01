@@ -82,42 +82,31 @@ impl NodeSchemaProvider for TemplateNode {
 /// - Handles nested access like `{{.user.name}}` -> `{{ user.name }}`
 fn convert_go_template(tmpl: &str) -> String {
     let mut result = String::with_capacity(tmpl.len());
-    let chars: Vec<char> = tmpl.chars().collect();
-    let mut i = 0;
+    let mut cursor = 0;
 
-    while i < chars.len() {
-        if i + 1 < chars.len() && chars[i] == '{' && chars[i + 1] == '{' {
-            // Find the closing `}}`
-            if let Some(close_pos) = find_closing_braces(&chars, i + 2) {
-                let inner = &tmpl[i + 2..close_pos];
-                let inner = inner.trim();
+    while let Some(open_rel) = tmpl[cursor..].find("{{") {
+        let open = cursor + open_rel;
+        result.push_str(&tmpl[cursor..open]);
 
-                // Convert `.field` to `field` (Go template dot-prefix).
-                let converted = inner.strip_prefix('.').unwrap_or(inner);
+        let inner_start = open + 2;
+        let Some(close_rel) = tmpl[inner_start..].find("}}") else {
+            result.push_str(&tmpl[open..]);
+            return result;
+        };
+        let close = inner_start + close_rel;
+        let inner = tmpl[inner_start..close].trim();
 
-                result.push_str("{{ ");
-                result.push_str(converted);
-                result.push_str(" }}");
-                i = close_pos + 2;
-                continue;
-            }
-        }
-        result.push(chars[i]);
-        i += 1;
+        // Convert `.field` to `field` (Go template dot-prefix).
+        let converted = inner.strip_prefix('.').unwrap_or(inner);
+
+        result.push_str("{{ ");
+        result.push_str(converted);
+        result.push_str(" }}");
+        cursor = close + 2;
     }
 
+    result.push_str(&tmpl[cursor..]);
     result
-}
-
-fn find_closing_braces(chars: &[char], start: usize) -> Option<usize> {
-    let mut i = start;
-    while i + 1 < chars.len() {
-        if chars[i] == '}' && chars[i + 1] == '}' {
-            return Some(i);
-        }
-        i += 1;
-    }
-    None
 }
 
 #[async_trait]

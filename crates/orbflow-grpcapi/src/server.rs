@@ -1,16 +1,17 @@
 // Copyright 2026 The Orbflow Authors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! gRPC server for the Orbflow workflow engine.
+//! JSON-RPC TCP server for the Orbflow workflow engine.
 //!
-//! Uses tonic for transport with a manually-defined service (no .proto file).
-//! This mirrors the Go implementation which uses a hand-written ServiceDesc
-//! and JSON codec instead of protobuf.
+//! This crate retains the historical `grpcapi` name, but this server is a
+//! newline-delimited JSON-RPC transport rather than standard protobuf gRPC.
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
@@ -65,6 +66,8 @@ pub struct ListWorkflowsResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StartWorkflowRequest {
     pub workflow_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
     #[serde(default)]
     pub input: Vec<u8>,
 }
@@ -87,7 +90,7 @@ pub struct InstanceResponse {
     pub data: Vec<u8>,
 }
 
-/// Envelope for JSON-RPC-like gRPC communication.
+/// Envelope for JSON-RPC TCP communication.
 #[derive(Debug, Serialize, Deserialize)]
 struct RpcRequest {
     method: String,
@@ -109,15 +112,18 @@ struct RpcError {
     message: String,
 }
 
+const MAX_RPC_FRAME_BYTES: usize = 1 << 20;
+const RPC_READ_DEADLINE: Duration = Duration::from_secs(30);
+
 // ---------------------------------------------------------------------------
 // GrpcServer
 // ---------------------------------------------------------------------------
 
-/// The Orbflow gRPC server wrapping an Engine.
+/// The Orbflow JSON-RPC TCP server wrapping an Engine.
 ///
 /// Scope: exposes a subset of the HTTP API — workflow lifecycle only
 /// (create, get, list, start, get instance, cancel instance). This keeps the
-/// gRPC contract minimal and stable for machine-to-machine integrations.
+/// JSON contract minimal and stable for machine-to-machine integrations.
 pub struct GrpcServer {
     engine: Arc<dyn Engine>,
     auth_token: Option<String>,
@@ -126,7 +132,7 @@ pub struct GrpcServer {
 }
 
 impl GrpcServer {
-    /// Creates a new gRPC server wrapping the engine.
+    /// Creates a new JSON-RPC TCP server wrapping the engine.
     ///
     /// When `auth_token` is `Some(t)`, every JSON-RPC request must include an
     /// `"auth_token"` field in the envelope that matches `t` exactly. Requests
@@ -144,8 +150,7 @@ impl GrpcServer {
 
     /// Starts the JSON-RPC server on the given address (e.g., "0.0.0.0:9090").
     ///
-    /// This is a TCP server using newline-delimited JSON, providing a gRPC-like
-    /// experience without requiring protobuf.
+    /// This is a TCP server using newline-delimited JSON, not protobuf gRPC.
     ///
     /// # Security note
     ///
@@ -156,9 +161,9 @@ impl GrpcServer {
     pub async fn serve(&self, addr: &str) -> Result<(), OrbflowError> {
         let listener = TcpListener::bind(addr)
             .await
-            .map_err(|e| OrbflowError::Internal(format!("grpc: bind {addr}: {e}")))?;
+            .map_err(|e| OrbflowError::Internal(format!("json-rpc: bind {addr}: {e}")))?;
 
-        tracing::info!("gRPC server listening on {addr}");
+        tracing::info!("JSON-RPC TCP server listening on {addr}");
 
         let mut shutdown_rx = self.shutdown_rx.clone();
 
@@ -166,21 +171,21 @@ impl GrpcServer {
             tokio::select! {
                 result = listener.accept() => {
                     let (stream, peer) = result.map_err(|e| {
-                        OrbflowError::Internal(format!("grpc: accept: {e}"))
+                        OrbflowError::Internal(format!("json-rpc: accept: {e}"))
                     })?;
 
-                    tracing::debug!("gRPC connection from {peer}");
+                    tracing::debug!("JSON-RPC TCP connection from {peer}");
                     let engine = self.engine.clone();
                     let auth_token = self.auth_token.clone();
 
                     tokio::spawn(async move {
                         if let Err(e) = handle_connection(stream, engine, auth_token).await {
-                            tracing::warn!("gRPC connection error from {peer}: {e}");
+                            tracing::warn!("JSON-RPC TCP connection error from {peer}: {e}");
                         }
                     });
                 }
                 _ = shutdown_rx.changed() => {
-                    tracing::info!("gRPC server shutting down");
+                    tracing::info!("JSON-RPC TCP server shutting down");
                     break;
                 }
             }
@@ -201,49 +206,38 @@ async fn handle_connection(
     engine: Arc<dyn Engine>,
     auth_token: Option<String>,
 ) -> Result<(), OrbflowError> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
-    let mut line = String::new();
 
     loop {
-        line.clear();
-        let n = reader
-            .read_line(&mut line)
-            .await
-            .map_err(|e| OrbflowError::Internal(format!("grpc: read: {e}")))?;
-
-        if n == 0 {
-            break; // Connection closed.
-        }
+        let frame = match read_rpc_frame(&mut reader).await? {
+            FrameRead::Frame(frame) => frame,
+            FrameRead::Eof => break,
+            FrameRead::TooLarge => {
+                let resp = error_response(
+                    "RESOURCE_EXHAUSTED",
+                    format!("request frame exceeds {MAX_RPC_FRAME_BYTES} bytes"),
+                );
+                write_rpc_response(&mut writer, &resp).await?;
+                break;
+            }
+            FrameRead::Timeout => {
+                let resp = error_response(
+                    "DEADLINE_EXCEEDED",
+                    format!("request read deadline exceeded after {RPC_READ_DEADLINE:?}"),
+                );
+                write_rpc_response(&mut writer, &resp).await?;
+                break;
+            }
+        };
 
         // Parse into a raw JSON object first so we can extract auth_token
         // before deserializing the typed RpcRequest.
-        let raw: serde_json::Value = match serde_json::from_str(line.trim()) {
+        let raw: serde_json::Value = match serde_json::from_slice(&frame) {
             Ok(v) => v,
             Err(e) => {
-                let resp = RpcResponse {
-                    data: None,
-                    error: Some(RpcError {
-                        code: "INVALID_ARGUMENT".into(),
-                        message: format!("invalid request: {e}"),
-                    }),
-                };
-                let out = match serde_json::to_vec(&resp) {
-                    Ok(mut b) => {
-                        b.push(b'\n');
-                        b
-                    }
-                    Err(_) => {
-                        b"{\"data\":null,\"error\":\"internal: response serialization failed\"}\n"
-                            .to_vec()
-                    }
-                };
-                if let Err(e) = writer.write_all(&out).await {
-                    tracing::warn!("gRPC: failed to write error response: {e}");
-                    break;
-                }
+                let resp = error_response("INVALID_ARGUMENT", format!("invalid request: {e}"));
+                write_rpc_response(&mut writer, &resp).await?;
                 continue;
             }
         };
@@ -255,20 +249,7 @@ async fn handle_connection(
                 orbflow_core::crypto::constant_time_eq(provided.as_bytes(), expected.as_bytes());
             if !is_valid {
                 let resp = error_response("UNAUTHENTICATED", "unauthorized");
-                let out = match serde_json::to_vec(&resp) {
-                    Ok(mut b) => {
-                        b.push(b'\n');
-                        b
-                    }
-                    Err(_) => {
-                        b"{\"data\":null,\"error\":\"internal: response serialization failed\"}\n"
-                            .to_vec()
-                    }
-                };
-                if let Err(e) = writer.write_all(&out).await {
-                    tracing::warn!("gRPC: failed to write error response: {e}");
-                    break;
-                }
+                write_rpc_response(&mut writer, &resp).await?;
                 continue;
             }
         }
@@ -276,49 +257,81 @@ async fn handle_connection(
         let request: RpcRequest = match serde_json::from_value(raw) {
             Ok(r) => r,
             Err(e) => {
-                let resp = RpcResponse {
-                    data: None,
-                    error: Some(RpcError {
-                        code: "INVALID_ARGUMENT".into(),
-                        message: format!("invalid request: {e}"),
-                    }),
-                };
-                let out = match serde_json::to_vec(&resp) {
-                    Ok(mut b) => {
-                        b.push(b'\n');
-                        b
-                    }
-                    Err(_) => {
-                        b"{\"data\":null,\"error\":\"internal: response serialization failed\"}\n"
-                            .to_vec()
-                    }
-                };
-                if let Err(e) = writer.write_all(&out).await {
-                    tracing::warn!("gRPC: failed to write error response: {e}");
-                    break;
-                }
+                let resp = error_response("INVALID_ARGUMENT", format!("invalid request: {e}"));
+                write_rpc_response(&mut writer, &resp).await?;
                 continue;
             }
         };
 
         let response = dispatch(&engine, &request).await;
-
-        let out = match serde_json::to_vec(&response) {
-            Ok(mut b) => {
-                b.push(b'\n');
-                b
-            }
-            Err(_) => {
-                b"{\"data\":null,\"error\":\"internal: response serialization failed\"}\n".to_vec()
-            }
-        };
-        writer
-            .write_all(&out)
-            .await
-            .map_err(|e| OrbflowError::Internal(format!("grpc: write: {e}")))?;
+        write_rpc_response(&mut writer, &response).await?;
     }
 
     Ok(())
+}
+
+enum FrameRead {
+    Frame(Vec<u8>),
+    Eof,
+    TooLarge,
+    Timeout,
+}
+
+async fn read_rpc_frame<R>(reader: &mut R) -> Result<FrameRead, OrbflowError>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut frame = Vec::new();
+
+    loop {
+        let available = match tokio::time::timeout(RPC_READ_DEADLINE, reader.fill_buf()).await {
+            Ok(Ok(buf)) => buf,
+            Ok(Err(e)) => return Err(OrbflowError::Internal(format!("json-rpc: read: {e}"))),
+            Err(_) => return Ok(FrameRead::Timeout),
+        };
+
+        if available.is_empty() {
+            return if frame.is_empty() {
+                Ok(FrameRead::Eof)
+            } else {
+                Err(OrbflowError::Internal(
+                    "json-rpc: connection closed mid-frame".into(),
+                ))
+            };
+        }
+
+        if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+            if frame.len().saturating_add(pos) > MAX_RPC_FRAME_BYTES {
+                return Ok(FrameRead::TooLarge);
+            }
+            frame.extend_from_slice(&available[..pos]);
+            reader.consume(pos + 1);
+            if frame.last() == Some(&b'\r') {
+                frame.pop();
+            }
+            return Ok(FrameRead::Frame(frame));
+        }
+
+        if frame.len().saturating_add(available.len()) > MAX_RPC_FRAME_BYTES {
+            return Ok(FrameRead::TooLarge);
+        }
+        frame.extend_from_slice(available);
+        let consumed = available.len();
+        reader.consume(consumed);
+    }
+}
+
+async fn write_rpc_response<W>(writer: &mut W, response: &RpcResponse) -> Result<(), OrbflowError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let mut out = serde_json::to_vec(response)
+        .map_err(|e| OrbflowError::Internal(format!("json-rpc: serialize response: {e}")))?;
+    out.push(b'\n');
+    writer
+        .write_all(&out)
+        .await
+        .map_err(|e| OrbflowError::Internal(format!("json-rpc: write: {e}")))
 }
 
 /// Dispatches an RPC request to the appropriate engine method.
@@ -340,21 +353,90 @@ async fn dispatch(engine: &Arc<dyn Engine>, req: &RpcRequest) -> RpcResponse {
     }
 }
 
+fn decode_rpc_bytes(value: &serde_json::Value, field: &str) -> Result<Vec<u8>, RpcResponse> {
+    if let Some(s) = value.as_str() {
+        use base64::Engine as _;
+        return base64::engine::general_purpose::STANDARD
+            .decode(s)
+            .map_err(|e| {
+                error_response(
+                    "INVALID_ARGUMENT",
+                    format!("{field} is not valid base64: {e}"),
+                )
+            });
+    }
+
+    let Some(arr) = value.as_array() else {
+        return Err(error_response(
+            "INVALID_ARGUMENT",
+            format!("{field} must be a base64 string or byte array"),
+        ));
+    };
+
+    if arr.len() > MAX_RPC_FRAME_BYTES {
+        return Err(error_response(
+            "RESOURCE_EXHAUSTED",
+            format!("{field} byte array exceeds {MAX_RPC_FRAME_BYTES} bytes"),
+        ));
+    }
+
+    let mut out = Vec::with_capacity(arr.len());
+    for (idx, item) in arr.iter().enumerate() {
+        let Some(n) = item.as_u64() else {
+            return Err(error_response(
+                "INVALID_ARGUMENT",
+                format!("{field}[{idx}] must be an integer in 0..=255"),
+            ));
+        };
+        let byte = u8::try_from(n).map_err(|_| {
+            error_response(
+                "INVALID_ARGUMENT",
+                format!("{field}[{idx}] is outside byte range 0..=255"),
+            )
+        })?;
+        out.push(byte);
+    }
+
+    Ok(out)
+}
+
+fn parse_start_input(
+    body: &serde_json::Value,
+) -> Result<HashMap<String, serde_json::Value>, RpcResponse> {
+    let Some(input_value) = body.get("input") else {
+        return Ok(HashMap::new());
+    };
+
+    if input_value.is_null() {
+        return Ok(HashMap::new());
+    }
+
+    if input_value.is_object() {
+        return serde_json::from_value(input_value.clone()).map_err(|e| {
+            error_response(
+                "INVALID_ARGUMENT",
+                format!("input object is invalid workflow input: {e}"),
+            )
+        });
+    }
+
+    if input_value.is_string() || input_value.is_array() {
+        let bytes = decode_rpc_bytes(input_value, "input")?;
+        return types::parse_input(&bytes).map_err(orbflow_error_to_response);
+    }
+
+    Err(error_response(
+        "INVALID_ARGUMENT",
+        "input must be an object, base64 string, byte array, or null",
+    ))
+}
+
 async fn handle_create_workflow(engine: &Arc<dyn Engine>, body: &serde_json::Value) -> RpcResponse {
-    let definition = match body.get("definition").and_then(|v| {
-        // Accept both raw bytes (array) and base64 string.
-        if let Some(s) = v.as_str() {
-            use base64::Engine as _;
-            base64::engine::general_purpose::STANDARD.decode(s).ok()
-        } else {
-            v.as_array().map(|arr| {
-                arr.iter()
-                    .filter_map(|x| x.as_u64().map(|n| n as u8))
-                    .collect()
-            })
-        }
-    }) {
-        Some(d) => d,
+    let definition = match body.get("definition") {
+        Some(value) => match decode_rpc_bytes(value, "definition") {
+            Ok(bytes) => bytes,
+            Err(resp) => return resp,
+        },
         None => {
             // Try treating the whole body as the workflow definition.
             match serde_json::to_vec(body) {
@@ -440,12 +522,32 @@ async fn handle_start_workflow(engine: &Arc<dyn Engine>, body: &serde_json::Valu
         Err(e) => return orbflow_error_to_response(e),
     };
 
-    let input: HashMap<String, serde_json::Value> = body
-        .get("input")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
+    let input = match parse_start_input(body) {
+        Ok(input) => input,
+        Err(resp) => return resp,
+    };
 
-    match engine.start_workflow(&wf_id, input).await {
+    let owner_id = match body.get("owner_id") {
+        Some(value) if value.is_null() => None,
+        Some(value) => match value.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(owner_id) => Some(owner_id),
+            None => {
+                return error_response("INVALID_ARGUMENT", "owner_id must be a non-empty string");
+            }
+        },
+        None => None,
+    };
+
+    let start_result = match owner_id {
+        Some(owner_id) => {
+            engine
+                .start_workflow_for_owner(&wf_id, input, owner_id)
+                .await
+        }
+        None => engine.start_workflow(&wf_id, input).await,
+    };
+
+    match start_result {
         Ok(inst) => match types::instance_to_bytes(&inst) {
             Ok(data) => ok_response(serde_json::json!({ "data": data })),
             Err(e) => orbflow_error_to_response(e),
@@ -504,12 +606,12 @@ fn ok_response(data: serde_json::Value) -> RpcResponse {
     }
 }
 
-fn error_response(code: &str, message: &str) -> RpcResponse {
+fn error_response(code: &str, message: impl Into<String>) -> RpcResponse {
     RpcResponse {
         data: None,
         error: Some(RpcError {
             code: code.to_owned(),
-            message: message.to_owned(),
+            message: message.into(),
         }),
     }
 }
@@ -524,10 +626,11 @@ fn orbflow_error_to_response(e: OrbflowError) -> RpcResponse {
         OrbflowError::CycleDetected => "INVALID_ARGUMENT",
         OrbflowError::DuplicateNode => "INVALID_ARGUMENT",
         OrbflowError::DuplicateEdge => "INVALID_ARGUMENT",
+        OrbflowError::Forbidden(_) => "PERMISSION_DENIED",
         OrbflowError::Cancelled => "CANCELLED",
         OrbflowError::Timeout => "DEADLINE_EXCEEDED",
         _ => "INTERNAL",
     };
 
-    error_response(code, &e.to_string())
+    error_response(code, e.to_string())
 }

@@ -5,11 +5,11 @@
 //! dispatches compensation tasks when a workflow fails.
 
 use chrono::Utc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use orbflow_core::event::*;
 use orbflow_core::execution::*;
-use orbflow_core::wire::{TaskMessage, WIRE_VERSION};
+use orbflow_core::wire::{ResultMessage, TaskMessage, WIRE_VERSION, dispatch_identity};
 use orbflow_core::workflow::Workflow;
 use orbflow_core::{OrbflowError, task_subject};
 
@@ -24,13 +24,6 @@ pub(crate) async fn start_compensation(
     wf: &Workflow,
     failed_node_id: &str,
 ) -> Result<(), OrbflowError> {
-    inst.saga = Some(SagaState {
-        compensating: true,
-        failed_node: Some(failed_node_id.to_owned()),
-        completed_nodes: Vec::new(),
-        compensated_nodes: Vec::new(),
-    });
-
     // Collect completed nodes that have compensation configs, in topo order.
     let execution_order = topological_order(wf);
     let mut to_compensate = Vec::new();
@@ -55,9 +48,13 @@ pub(crate) async fn start_compensation(
     // Reverse for compensation (last completed first).
     to_compensate.reverse();
 
-    // Track only the nodes we actually dispatch, so the completion check
-    // in handle_compensation_result matches dispatched vs completed counts.
-    let mut dispatched_nodes = Vec::with_capacity(to_compensate.len());
+    inst.status = InstanceStatus::Running;
+    inst.saga = Some(SagaState {
+        compensating: true,
+        failed_node: Some(failed_node_id.to_owned()),
+        completed_nodes: to_compensate.clone(),
+        compensated_nodes: Vec::new(),
+    });
 
     if let Err(e) = engine
         .store()
@@ -77,26 +74,24 @@ pub(crate) async fn start_compensation(
         "saga: starting compensation"
     );
 
-    // Dispatch compensation tasks — continue on individual failures so the
-    // saga can still terminate when transient errors affect only one node.
-    for node_id in &to_compensate {
-        if let Err(e) = dispatch_compensation(engine, inst, wf, node_id).await {
-            error!(
-                node = node_id.as_str(),
-                error = %e,
-                "saga: compensation dispatch failed, skipping node"
-            );
-            continue;
-        }
-        dispatched_nodes.push(node_id.clone());
+    if to_compensate.is_empty() {
+        finalize_compensation(engine, inst).await?;
+        return engine.save_instance(inst).await;
     }
 
-    // Only track nodes that were actually dispatched so completion check
-    // in handle_compensation_result will fire correctly.
-    if let Some(ref mut saga) = inst.saga {
-        saga.completed_nodes = dispatched_nodes;
-    }
+    // Persist the compensation plan before dispatching so crash recovery can
+    // re-drive any compensation task that was not observed as successful.
+    engine.save_instance(inst).await?;
+    dispatch_pending_compensations(engine, inst, wf).await
+}
 
+/// Re-drives compensation tasks that are still incomplete after restart.
+pub(crate) async fn resume_compensation(
+    engine: &OrbflowEngine,
+    inst: &mut Instance,
+    wf: &Workflow,
+) -> Result<(), OrbflowError> {
+    dispatch_pending_compensations(engine, inst, wf).await?;
     engine.save_instance(inst).await
 }
 
@@ -122,7 +117,12 @@ async fn dispatch_compensation(
 
     let task = TaskMessage {
         instance_id: inst.id.clone(),
-        node_id: format!("_compensate_{node_id}"),
+        node_id: compensation_task_node_id(node_id),
+        dispatch_id: Some(dispatch_identity(
+            &inst.id,
+            &compensation_task_node_id(node_id),
+            1,
+        )),
         plugin_ref: compensate.plugin_ref.clone(),
         config: None,
         input: Some(input),
@@ -142,58 +142,199 @@ async fn dispatch_compensation(
         .await
 }
 
+async fn dispatch_pending_compensations(
+    engine: &OrbflowEngine,
+    inst: &mut Instance,
+    wf: &Workflow,
+) -> Result<(), OrbflowError> {
+    let pending_nodes = match inst.saga.as_ref() {
+        Some(saga) if saga.compensating => saga
+            .completed_nodes
+            .iter()
+            .filter(|node_id| !saga.compensated_nodes.contains(node_id))
+            .cloned()
+            .collect::<Vec<_>>(),
+        _ => return Ok(()),
+    };
+
+    if pending_nodes.is_empty() {
+        finalize_compensation(engine, inst).await?;
+        return Ok(());
+    }
+
+    for node_id in &pending_nodes {
+        if let Err(e) = dispatch_compensation(engine, inst, wf, node_id).await {
+            error!(
+                node = node_id.as_str(),
+                error = %e,
+                "saga: compensation dispatch failed; leaving node pending for recovery"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn compensation_task_node_id(node_id: &str) -> String {
+    format!("_compensate_{node_id}")
+}
+
 /// Processes a compensation task result. Tracks which nodes have been
 /// compensated and emits a completion event when all are done.
 pub(crate) async fn handle_compensation_result(
     engine: &OrbflowEngine,
     inst: &mut Instance,
-    node_id: &str,
+    result: &ResultMessage,
 ) -> Result<(), OrbflowError> {
-    let saga = match &mut inst.saga {
-        Some(s) => s,
-        None => return Ok(()),
-    };
-
     // Strip the _compensate_ prefix to get original node ID.
-    let orig_node_id = node_id
+    let orig_node_id = result
+        .node_id
         .strip_prefix("_compensate_")
-        .unwrap_or(node_id)
+        .unwrap_or(&result.node_id)
         .to_owned();
 
-    if !saga.compensated_nodes.contains(&orig_node_id) {
-        saga.compensated_nodes.push(orig_node_id);
+    if let Some(error_msg) = result.error.as_ref() {
+        warn!(
+            instance = %inst.id,
+            compensation_node = result.node_id.as_str(),
+            original_node = orig_node_id.as_str(),
+            error = error_msg.as_str(),
+            "saga: compensation task failed; marking compensation terminal"
+        );
+        fail_compensation(engine, inst, &orig_node_id, error_msg).await?;
+        return engine.save_instance(inst).await;
     }
-    inst.updated_at = Utc::now();
 
-    // Check if all compensations are done.
-    // Guard against empty saga (no nodes had compensation configs) triggering
-    // a false-positive completion on stale results.
-    let all_done = !saga.completed_nodes.is_empty()
-        && saga.compensated_nodes.len() == saga.completed_nodes.len()
-        && saga
-            .compensated_nodes
-            .iter()
-            .all(|n| saga.completed_nodes.contains(n));
+    let all_done: bool;
+    {
+        let saga = match &mut inst.saga {
+            Some(s) if s.compensating => s,
+            _ => {
+                return Err(OrbflowError::Bus(format!(
+                    "compensation result for node {} received without active saga",
+                    result.node_id
+                )));
+            }
+        };
+
+        if !saga.completed_nodes.contains(&orig_node_id) {
+            return Err(OrbflowError::Bus(format!(
+                "compensation result for node {} was not dispatched",
+                result.node_id
+            )));
+        }
+        if saga.compensated_nodes.contains(&orig_node_id) {
+            return Err(OrbflowError::Bus(format!(
+                "duplicate compensation result for node {}",
+                result.node_id
+            )));
+        }
+
+        saga.compensated_nodes.push(orig_node_id);
+        inst.updated_at = Utc::now();
+
+        all_done = !saga.completed_nodes.is_empty()
+            && saga.compensated_nodes.len() == saga.completed_nodes.len()
+            && saga
+                .compensated_nodes
+                .iter()
+                .all(|n| saga.completed_nodes.contains(n));
+    }
 
     if all_done {
-        let compensated = saga.compensated_nodes.clone();
-        if let Err(e) = engine
-            .store()
-            .append_event(DomainEvent::CompensationCompleted(
-                CompensationCompletedEvent {
-                    base: BaseEvent::new(inst.id.clone(), inst.version),
-                },
-            ))
-            .await
-        {
-            error!(error = %e, instance = %inst.id, "failed to persist CompensationCompleted event");
-        }
-        info!(
-            instance = %inst.id,
-            compensated = compensated.len(),
-            "saga: compensation completed"
-        );
+        finalize_compensation(engine, inst).await?;
     }
 
     engine.save_instance(inst).await
+}
+
+async fn finalize_compensation(
+    engine: &OrbflowEngine,
+    inst: &mut Instance,
+) -> Result<(), OrbflowError> {
+    let compensated = inst
+        .saga
+        .as_ref()
+        .map(|s| s.compensated_nodes.len())
+        .unwrap_or_default();
+    let failed_node = inst
+        .saga
+        .as_ref()
+        .and_then(|s| s.failed_node.clone())
+        .unwrap_or_else(|| "unknown".to_owned());
+
+    if let Some(saga) = inst.saga.as_mut() {
+        saga.compensating = false;
+    }
+    inst.status = InstanceStatus::Failed;
+    inst.updated_at = Utc::now();
+
+    if let Err(e) = engine
+        .store()
+        .append_event(DomainEvent::CompensationCompleted(
+            CompensationCompletedEvent {
+                base: BaseEvent::new(inst.id.clone(), inst.version),
+            },
+        ))
+        .await
+    {
+        error!(error = %e, instance = %inst.id, "failed to persist CompensationCompleted event");
+    }
+
+    if let Err(e) = engine
+        .store()
+        .append_event(DomainEvent::InstanceFailed(InstanceFailedEvent {
+            base: BaseEvent::new(inst.id.clone(), inst.version),
+            error: format!("node {failed_node} failed; compensation completed"),
+        }))
+        .await
+    {
+        error!(error = %e, instance = %inst.id, "failed to persist InstanceFailed after compensation");
+    }
+
+    info!(
+        instance = %inst.id,
+        compensated = compensated,
+        "saga: compensation completed"
+    );
+
+    Ok(())
+}
+
+async fn fail_compensation(
+    engine: &OrbflowEngine,
+    inst: &mut Instance,
+    original_node_id: &str,
+    error_msg: &str,
+) -> Result<(), OrbflowError> {
+    let failed_node = inst
+        .saga
+        .as_ref()
+        .and_then(|s| s.failed_node.clone())
+        .unwrap_or_else(|| "unknown".to_owned());
+
+    if let Some(saga) = inst.saga.as_mut() {
+        saga.compensating = false;
+    }
+    inst.status = InstanceStatus::Failed;
+    inst.updated_at = Utc::now();
+
+    if let Err(e) = engine
+        .store()
+        .append_event(DomainEvent::InstanceFailed(InstanceFailedEvent {
+            base: BaseEvent::new(inst.id.clone(), inst.version),
+            error: format!(
+                "node {failed_node} failed; compensation for node {original_node_id} failed: {error_msg}"
+            ),
+        }))
+        .await
+    {
+        error!(
+            error = %e,
+            instance = %inst.id,
+            "failed to persist InstanceFailed after compensation failure"
+        );
+    }
+
+    Ok(())
 }

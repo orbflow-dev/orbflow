@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use orbflow_core::execution::NodeStatus;
 use orbflow_core::options::EngineOptionsBuilder;
 use orbflow_core::ports::{Bus, Engine, InstanceStore, MsgHandler, NodeExecutor, NodeOutput};
 use orbflow_core::wire::{ResultMessage, TaskMessage};
@@ -146,6 +147,8 @@ async fn build_engine(
                     result_id: None,
                     instance_id: task.instance_id,
                     node_id: task.node_id,
+                    attempt: task.attempt,
+                    dispatch_id: task.dispatch_id,
                     output: out.data,
                     error: out.error,
                     trace_context: None,
@@ -155,6 +158,8 @@ async fn build_engine(
                     result_id: None,
                     instance_id: task.instance_id,
                     node_id: task.node_id,
+                    attempt: task.attempt,
+                    dispatch_id: task.dispatch_id,
                     output: None,
                     error: Some(e.to_string()),
                     trace_context: None,
@@ -175,6 +180,44 @@ async fn build_engine(
         .expect("subscribe should not fail");
 
     engine
+}
+
+struct PersistedBeforePublishBus {
+    store: Arc<MockStore>,
+    messages: std::sync::Mutex<Vec<Vec<u8>>>,
+}
+
+impl PersistedBeforePublishBus {
+    fn new(store: Arc<MockStore>) -> Self {
+        Self {
+            store,
+            messages: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Bus for PersistedBeforePublishBus {
+    async fn publish(&self, _subject: &str, data: &[u8]) -> Result<(), OrbflowError> {
+        let task: TaskMessage =
+            serde_json::from_slice(data).map_err(|e| OrbflowError::Internal(e.to_string()))?;
+        let stored = self.store.get_instance(&task.instance_id).await?;
+        let state = stored.node_states.get(&task.node_id).ok_or_else(|| {
+            OrbflowError::Internal(format!("missing persisted node state for {}", task.node_id))
+        })?;
+        assert_eq!(state.status, NodeStatus::Queued);
+        assert_eq!(state.attempt, task.attempt);
+        self.messages.lock().unwrap().push(data.to_vec());
+        Ok(())
+    }
+
+    async fn subscribe(&self, _subject: &str, _handler: MsgHandler) -> Result<(), OrbflowError> {
+        Ok(())
+    }
+
+    async fn close(&self) -> Result<(), OrbflowError> {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +266,33 @@ async fn create_and_start_workflow() {
         "expected Running or Completed, got {:?}",
         stored.status
     );
+}
+
+#[tokio::test]
+async fn dispatch_persists_queued_attempt_before_publish() {
+    let store = Arc::new(MockStore::new());
+    let bus = Arc::new(PersistedBeforePublishBus::new(Arc::clone(&store)));
+
+    let action = make_node("action-1", "builtin:action", NodeKind::Action);
+    let wf = make_workflow("wf-persist-before-publish", vec![action], vec![]);
+
+    let opts = EngineOptionsBuilder::new()
+        .store(Arc::clone(&store) as Arc<dyn orbflow_core::ports::Store>)
+        .bus(bus as Arc<dyn Bus>)
+        .pool_name("test")
+        .enable_resume(false)
+        .build()
+        .expect("test engine options");
+    let engine = OrbflowEngine::new(opts);
+
+    engine.create_workflow(&wf).await.expect("create_workflow");
+    engine
+        .start_workflow(
+            &WorkflowId::new("wf-persist-before-publish"),
+            HashMap::new(),
+        )
+        .await
+        .expect("start_workflow");
 }
 
 /// Two-node linear workflow A → B, both succeed.
