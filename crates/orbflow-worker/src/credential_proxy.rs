@@ -18,7 +18,6 @@ use orbflow_core::credential_proxy::{CapabilityRequest, CapabilityResponse};
 use orbflow_core::ports::CredentialStore;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 
-
 /// DNS resolver that validates resolved IP addresses to prevent SSRF and DNS rebinding attacks.
 struct ProxySsrfSafeResolver;
 
