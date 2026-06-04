@@ -12,6 +12,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::error::OrbflowError;
 use crate::workflow::WorkflowId;
 
 /// A snapshot of a workflow definition at a specific version.
@@ -180,6 +181,48 @@ pub struct ChangeRequest {
     pub comments: Vec<ReviewComment>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// Rejects frontend-only ReactFlow payloads before a change request is merged
+/// into the durable workflow definition.
+///
+/// Store implementations still accept legacy partial backend definitions in
+/// tests and internal callers, but ReactFlow nodes carry UI-only `data` blobs
+/// that cannot be executed by the engine.
+pub fn reject_reactflow_change_definition(definition: &Value) -> Result<(), OrbflowError> {
+    if definition
+        .get("nodes")
+        .and_then(Value::as_array)
+        .is_some_and(|nodes| {
+            nodes
+                .iter()
+                .any(|node| node.as_object().is_some_and(|obj| obj.contains_key("data")))
+        })
+    {
+        return Err(OrbflowError::InvalidNodeConfig(
+            "change request definition uses ReactFlow node shape; submit a backend workflow definition"
+                .into(),
+        ));
+    }
+
+    if definition
+        .get("edges")
+        .and_then(Value::as_array)
+        .is_some_and(|edges| {
+            edges.iter().any(|edge| {
+                edge.as_object().is_some_and(|obj| {
+                    obj.contains_key("sourceHandle") || obj.contains_key("targetHandle")
+                })
+            })
+        })
+    {
+        return Err(OrbflowError::InvalidNodeConfig(
+            "change request definition uses ReactFlow edge shape; submit a backend workflow definition"
+                .into(),
+        ));
+    }
+
+    Ok(())
 }
 
 /// An inline comment on a specific element of a workflow change request.

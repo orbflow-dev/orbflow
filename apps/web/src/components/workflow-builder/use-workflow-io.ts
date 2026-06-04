@@ -6,6 +6,7 @@ import { useCanvasStore } from "@/store/canvas-store";
 import { usePanelStore } from "@/store/panel-store";
 import { useToastStore } from "@/store/toast-store";
 import type { Workflow, WorkflowNode } from "@/lib/api";
+import type { LegacyTriggerData } from "@orbflow/core/types";
 
 // -- Utilities -------------------------------------
 
@@ -21,7 +22,7 @@ const UNSAFE_OBJECT_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const NODE_KINDS = new Set(["trigger", "action", "capability"]);
 const WORKFLOW_STATUSES = new Set(["draft", "active", "archived"]);
 const PARAMETER_MODES = new Set(["static", "expression"]);
-const TRIGGER_TYPES = new Set(["manual", "event", "schedule", "webhook"]);
+const TRIGGER_TYPES = new Set(["manual", "event", "schedule", "webhook", "cron"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -66,6 +67,11 @@ function positionFrom(value: unknown): { x: number; y: number } {
     x: finiteNumber(p.x) ?? 0,
     y: finiteNumber(p.y) ?? 0,
   };
+}
+
+function normalizeWireTriggerType(value: string): "manual" | "event" | "schedule" | "webhook" | undefined {
+  if (!TRIGGER_TYPES.has(value)) return undefined;
+  return value === "cron" ? "schedule" : value as "manual" | "event" | "schedule" | "webhook";
 }
 
 function sanitizeJsonValue(value: unknown, depth = 0): unknown {
@@ -185,8 +191,9 @@ function sanitizeMetadata(value: unknown): unknown {
 
 function sanitizeTriggerConfig(value: unknown): unknown {
   if (!isRecord(value) || typeof value.trigger_type !== "string") return undefined;
-  if (!TRIGGER_TYPES.has(value.trigger_type)) return undefined;
-  const config: Record<string, unknown> = { trigger_type: value.trigger_type };
+  const triggerType = normalizeWireTriggerType(value.trigger_type);
+  if (!triggerType) return undefined;
+  const config: Record<string, unknown> = { trigger_type: triggerType };
   if (typeof value.cron === "string") config.cron = value.cron;
   if (typeof value.event_name === "string") config.event_name = value.event_name;
   if (typeof value.path === "string") config.path = value.path;
@@ -284,7 +291,7 @@ function sanitizeAnnotations(value: unknown): Workflow["annotations"] | undefine
   return annotations.length ? annotations : undefined;
 }
 
-function sanitizeTriggers(value: unknown): unknown[] | undefined {
+function sanitizeTriggers(value: unknown): LegacyTriggerData[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const triggers = value.flatMap((item) => {
     if (!isRecord(item)) return [];
@@ -293,14 +300,17 @@ function sanitizeTriggers(value: unknown): unknown[] | undefined {
       : typeof item.trigger_type === "string"
         ? item.trigger_type
         : undefined;
-    if (!triggerType || !TRIGGER_TYPES.has(triggerType)) return [];
+    const normalizedTriggerType = triggerType ? normalizeWireTriggerType(triggerType) : undefined;
+    if (!normalizedTriggerType) return [];
 
     const config = isRecord(item.config) ? item.config : {};
-    const trigger: Record<string, unknown> = {
-      type: triggerType,
+    const trigger: LegacyTriggerData & {
+      config: NonNullable<LegacyTriggerData["config"]>;
+    } = {
+      type: normalizedTriggerType,
       config: {},
     };
-    const triggerConfig = trigger.config as Record<string, unknown>;
+    const triggerConfig = trigger.config;
     if (typeof config.cron === "string") triggerConfig.cron = config.cron;
     if (typeof config.event_name === "string") {
       triggerConfig.event_name = config.event_name;
@@ -323,7 +333,7 @@ export function sanitizeImportedWorkflow(
     return null;
   }
 
-  const sanitized: Partial<Workflow> & { triggers?: unknown[] } = {
+  const sanitized: Partial<Workflow> = {
     name: `${raw.name} (imported)`,
     description:
       typeof raw.description === "string" ? raw.description : undefined,
@@ -353,17 +363,45 @@ export function sanitizeImportedWorkflow(
  */
 export function buildExportPayload(
   workflow: Workflow,
-  canvasNodes: { id: string; position: { x: number; y: number } }[],
+  canvasNodes: {
+    id: string;
+    position: { x: number; y: number };
+    data?: Record<string, unknown>;
+    style?: {
+      width?: unknown;
+      height?: unknown;
+    };
+  }[],
 ): Workflow {
   const positionMap = new Map(
     canvasNodes.map((n) => [n.id, n.position]),
   );
+  const nodeMap = new Map(canvasNodes.map((n) => [n.id, n]));
 
   return {
     ...workflow,
     nodes: workflow.nodes.map((node) => {
       const livePos = positionMap.get(node.id);
       return livePos ? { ...node, position: livePos } : node;
+    }),
+    annotations: workflow.annotations?.map((annotation) => {
+      const prefix = annotation.type === "text" ? "text_" : "sticky_";
+      const canvasNode = nodeMap.get(`${prefix}${annotation.id}`);
+      if (!canvasNode) return annotation;
+
+      const width = canvasNode.data?.width ?? canvasNode.style?.width;
+      const height = canvasNode.data?.height ?? canvasNode.style?.height;
+      const style = {
+        ...(annotation.style ?? {}),
+        ...(typeof width === "number" ? { width } : {}),
+        ...(typeof height === "number" ? { height } : {}),
+      };
+
+      return {
+        ...annotation,
+        position: canvasNode.position,
+        style: Object.keys(style).length ? style : undefined,
+      };
     }),
   };
 }

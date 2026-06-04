@@ -241,6 +241,17 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl crate::ports::AtomicInstanceCreator for StubStore {
+        async fn create_instance_tx(
+            &self,
+            _inst: &Instance,
+            _event: DomainEvent,
+        ) -> Result<(), OrbflowError> {
+            unimplemented!()
+        }
+    }
+
     impl Store for StubStore {}
 
     // --- Stub Bus ---

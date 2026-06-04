@@ -9,7 +9,7 @@ use std::sync::Arc;
 use axum::Router;
 use orbflow_core::workflow::{DefinitionStatus, Node, ParameterMode, Workflow, WorkflowId};
 use orbflow_core::{Engine, ListOptions, OrbflowError, Trigger, TriggerType, WorkflowStore};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::TriggerCallback;
 use crate::cron::CronScheduler;
@@ -187,20 +187,24 @@ impl TriggerManager {
                     if let Some(ref cron_expr) = tc.cron
                         && !cron_expr.is_empty()
                     {
-                        self.cron.add(wf_id, cron_expr).await;
+                        self.cron
+                            .add_trigger_node(wf_id, Some(&node.id), cron_expr)
+                            .await;
                     }
                 }
                 TriggerType::Event => {
                     if let Some(ref event_name) = tc.event_name
                         && !event_name.is_empty()
                     {
-                        self.event.subscribe(wf_id, event_name);
+                        self.event
+                            .subscribe_trigger_node(wf_id, event_name, Some(&node.id));
                     }
                 }
                 TriggerType::Webhook => {
                     let path = tc.path.as_deref().unwrap_or("");
                     let secret = webhook_secret_from_node(node);
-                    self.webhook.register_with_secret(wf_id, path, secret);
+                    self.webhook
+                        .register_trigger_node_with_secret(wf_id, path, &node.id, secret);
                 }
                 TriggerType::Manual => {
                     // Manual triggers are started via the API — nothing to register.
@@ -302,12 +306,11 @@ async fn fire_trigger(
 ) {
     match store.get_workflow(&wf_id).await {
         Ok(wf) if workflow_uses_credentials(&wf) => {
-            error!(
+            warn!(
                 workflow = %wf_id,
                 trigger = %trigger_type,
-                "trigger: workflow uses credentials but trigger execution has no owner context"
+                "trigger: workflow uses credentials but trigger execution has no owner context; starting anyway so credential resolution fails visibly"
             );
-            return;
         }
         Ok(_) => {}
         Err(e) => {
@@ -322,13 +325,13 @@ async fn fire_trigger(
     }
 
     let mut input: HashMap<String, serde_json::Value> = HashMap::new();
+    for (k, v) in payload {
+        input.insert(k, v);
+    }
     input.insert(
         "_trigger_type".to_owned(),
         serde_json::Value::String(trigger_type.to_string()),
     );
-    for (k, v) in payload {
-        input.insert(k, v);
-    }
 
     match engine.start_workflow(&wf_id, input).await {
         Ok(inst) => {

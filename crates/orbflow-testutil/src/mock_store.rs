@@ -15,7 +15,9 @@ use orbflow_core::error::OrbflowError;
 use orbflow_core::event::DomainEvent;
 use orbflow_core::execution::{Instance, InstanceId, InstanceStatus};
 use orbflow_core::pagination::paginate;
-use orbflow_core::ports::{EventStore, InstanceStore, ListOptions, Store, WorkflowStore};
+use orbflow_core::ports::{
+    AtomicInstanceCreator, EventStore, InstanceStore, ListOptions, Store, WorkflowStore,
+};
 use orbflow_core::versioning::WorkflowVersion;
 use orbflow_core::workflow::{Workflow, WorkflowId};
 
@@ -193,6 +195,24 @@ impl InstanceStore for MockStore {
             .cloned()
             .collect();
         Ok(running)
+    }
+}
+
+#[async_trait]
+impl AtomicInstanceCreator for MockStore {
+    async fn create_instance_tx(
+        &self,
+        inst: &Instance,
+        event: DomainEvent,
+    ) -> Result<(), OrbflowError> {
+        let mut inner = self.inner.write();
+        if inner.instances.contains_key(&inst.id) {
+            return Err(OrbflowError::AlreadyExists);
+        }
+        let instance_id = inst.id.clone();
+        inner.instances.insert(instance_id.clone(), inst.clone());
+        inner.events.entry(instance_id).or_default().push(event);
+        Ok(())
     }
 }
 

@@ -168,7 +168,7 @@ export interface ApiClient {
   alerts: {
     list: () => Promise<AlertRule[]>;
     create: (rule: CreateAlertInput) => Promise<AlertRule>;
-    update: (id: string, rule: Partial<CreateAlertInput>) => Promise<AlertRule>;
+    update: (id: string, rule: CreateAlertInput) => Promise<AlertRule>;
     delete: (id: string) => Promise<{ status: string }>;
   };
 }

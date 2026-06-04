@@ -176,6 +176,7 @@ export function CredentialForm({
                         field={field}
                         value={formData[field.key]}
                         onChange={(val) => dispatch({ type: "SET_FIELD", key: field.key, value: val })}
+                        preserveOnBlank={Boolean(editingId)}
                       />
                     ))}
                   </div>

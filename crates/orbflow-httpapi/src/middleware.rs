@@ -7,7 +7,8 @@
 use std::sync::{Arc, RwLock};
 
 use axum::Json;
-use axum::body::Body;
+use axum::body::{Body, to_bytes};
+use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -104,6 +105,99 @@ pub fn sensitive_rate_limiter(per_sec: u64, burst: u32) -> Result<RateLimiterLay
         .ok_or_else(|| OrbflowError::Internal("invalid sensitive rate limiter config".into()))?;
 
     Ok(GovernorLayer::new(config))
+}
+
+// ─── Error Envelope Normalization ──────────────────────────────────────────
+
+const ERROR_ENVELOPE_BODY_LIMIT: usize = 64 * 1024;
+
+#[derive(Serialize)]
+struct ErrorEnvelopeBody {
+    data: Option<()>,
+    error: String,
+}
+
+pub async fn error_envelope_middleware(req: Request<Body>, next: Next) -> Response {
+    let resp = next.run(req).await;
+    let status = resp.status();
+
+    if !status.is_client_error() && !status.is_server_error() {
+        return resp;
+    }
+
+    let (parts, body) = resp.into_parts();
+    let bytes = match to_bytes(body, ERROR_ENVELOPE_BODY_LIMIT).await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to read error response body for envelope normalization");
+            return (
+                status,
+                Json(ErrorEnvelopeBody {
+                    data: None,
+                    error: status
+                        .canonical_reason()
+                        .unwrap_or("request failed")
+                        .to_ascii_lowercase(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    if is_error_envelope(&bytes) {
+        return Response::from_parts(parts, Body::from(bytes));
+    }
+
+    let message = error_message_from_body(status, &bytes);
+    let mut normalized = (
+        status,
+        Json(ErrorEnvelopeBody {
+            data: None,
+            error: message,
+        }),
+    )
+        .into_response();
+
+    for (name, value) in parts.headers.iter() {
+        if name != CONTENT_TYPE && name != CONTENT_LENGTH {
+            normalized.headers_mut().insert(name.clone(), value.clone());
+        }
+    }
+
+    normalized
+}
+
+fn is_error_envelope(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()
+        .and_then(|value| {
+            let object = value.as_object()?;
+            Some(object.contains_key("data") && object.contains_key("error"))
+        })
+        .unwrap_or(false)
+}
+
+fn error_message_from_body(status: StatusCode, bytes: &[u8]) -> String {
+    if status == StatusCode::PAYLOAD_TOO_LARGE {
+        return "request body too large".to_string();
+    }
+
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes)
+        && let Some(error) = value.get("error").and_then(|v| v.as_str())
+        && !error.trim().is_empty()
+    {
+        return error.trim().to_string();
+    }
+
+    let text = String::from_utf8_lossy(bytes).trim().to_string();
+    if !text.is_empty() {
+        return text;
+    }
+
+    status
+        .canonical_reason()
+        .unwrap_or("request failed")
+        .to_ascii_lowercase()
 }
 
 // ─── Legacy StartRateLimiter (per-workflow inline check) ────────────────────

@@ -18,10 +18,11 @@ interface SchemaFieldProps {
   field: SchemaFieldDefinition;
   value: unknown;
   onChange: (value: unknown) => void;
+  preserveOnBlank?: boolean;
 }
 
 /** Renders a single schema-driven field with proper input type */
-export function SchemaField({ field, value, onChange }: SchemaFieldProps) {
+export function SchemaField({ field, value, onChange, preserveOnBlank = false }: SchemaFieldProps) {
   const [showSecret, setShowSecret] = useState(false);
 
   const isPassword =
@@ -125,7 +126,9 @@ export function SchemaField({ field, value, onChange }: SchemaFieldProps) {
             )
           }
           placeholder={
-            field.default !== undefined
+            preserveOnBlank && isPassword
+              ? "Leave blank to keep existing value"
+              : field.default !== undefined
               ? String(field.default)
               : `Enter ${field.label.toLowerCase()}...`
           }
@@ -153,6 +156,11 @@ export function SchemaField({ field, value, onChange }: SchemaFieldProps) {
           </button>
         )}
       </div>
+      {preserveOnBlank && isPassword && (
+        <p className="mt-1 text-caption text-orbflow-text-ghost">
+          Enter a new value only when rotating this secret.
+        </p>
+      )}
     </div>
   );
 }

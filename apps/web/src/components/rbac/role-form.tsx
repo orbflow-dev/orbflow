@@ -44,6 +44,7 @@ interface RoleFormProps {
 
 export function RoleForm({ existingRoleIds, initialRole, onSubmit, onCancel }: RoleFormProps) {
   const isEditing = initialRole !== undefined;
+  const builtinLocked = initialRole?.builtin === true;
 
   const [name, setName] = useState(initialRole?.name ?? "");
   const [id, setId] = useState(initialRole?.id ?? "");
@@ -80,7 +81,7 @@ export function RoleForm({ existingRoleIds, initialRole, onSubmit, onCancel }: R
   const idValid = id.length >= 1 && /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(id);
   const idUnique = isEditing || !existingRoleIds.includes(id);
   const hasPermissions = permissions.length > 0;
-  const canSubmit = nameValid && idValid && idUnique && hasPermissions;
+  const canSubmit = !builtinLocked && nameValid && idValid && idUnique && hasPermissions;
 
   function handleSubmit() {
     if (!canSubmit) return;
@@ -111,7 +112,8 @@ export function RoleForm({ existingRoleIds, initialRole, onSubmit, onCancel }: R
             value={name}
             onChange={(e) => handleNameChange(e.target.value)}
             placeholder="e.g. Deploy Manager"
-            className={inputClasses}
+            disabled={builtinLocked}
+            className={cn(inputClasses, builtinLocked && "opacity-50 cursor-not-allowed")}
             autoFocus
             onKeyDown={(e) => {
               if (e.key === "Enter") handleSubmit();
@@ -161,7 +163,8 @@ export function RoleForm({ existingRoleIds, initialRole, onSubmit, onCancel }: R
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           placeholder="What this role is for..."
-          className={inputClasses}
+          disabled={builtinLocked}
+          className={cn(inputClasses, builtinLocked && "opacity-50 cursor-not-allowed")}
           onKeyDown={(e) => {
             if (e.key === "Enter") handleSubmit();
             if (e.key === "Escape") onCancel();
@@ -184,11 +187,13 @@ export function RoleForm({ existingRoleIds, initialRole, onSubmit, onCancel }: R
                 type="button"
                 onClick={() => togglePermission(perm)}
                 aria-pressed={selected}
+                disabled={builtinLocked}
                 className={cn(
                   "inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium transition-colors duration-200 cursor-pointer",
                   selected
                     ? cn(colors.bg, colors.text)
-                    : "bg-orbflow-surface-hover/50 text-orbflow-text-ghost/40"
+                    : "bg-orbflow-surface-hover/50 text-orbflow-text-ghost/40",
+                  builtinLocked && "cursor-not-allowed opacity-60"
                 )}
               >
                 <NodeIcon name={colors.icon} className="w-3 h-3" />

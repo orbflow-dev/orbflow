@@ -12,6 +12,8 @@ use tracing::{info, warn};
 
 use crate::TriggerCallback;
 
+const FIRED_TRIGGER_NODE_ID_KEY: &str = "_fired_trigger_node_id";
+
 /// In-memory pub/sub for named events.
 ///
 /// Workflows subscribe to event names. When an event is emitted,
@@ -21,6 +23,8 @@ pub struct EventBus {
     subscriptions: DashMap<String, Vec<WorkflowId>>,
     /// Maps workflow_id -> list of event names it is subscribed to.
     workflow_events: DashMap<String, Vec<String>>,
+    /// Maps workflow_id -> event_name -> fired trigger node id.
+    trigger_nodes: DashMap<String, HashMap<String, String>>,
     fire: TriggerCallback,
 }
 
@@ -30,12 +34,30 @@ impl EventBus {
         Self {
             subscriptions: DashMap::new(),
             workflow_events: DashMap::new(),
+            trigger_nodes: DashMap::new(),
             fire,
         }
     }
 
     /// Subscribes a workflow to a named event.
     pub fn subscribe(&self, workflow_id: &WorkflowId, event_name: &str) {
+        self.subscribe_trigger_node(workflow_id, event_name, None);
+    }
+
+    /// Subscribes a trigger-kind node to a named event.
+    pub fn subscribe_trigger_node(
+        &self,
+        workflow_id: &WorkflowId,
+        event_name: &str,
+        trigger_node_id: Option<&str>,
+    ) {
+        if let Some(node_id) = trigger_node_id {
+            self.trigger_nodes
+                .entry(workflow_id.to_string())
+                .or_default()
+                .insert(event_name.to_owned(), node_id.to_owned());
+        }
+
         let already_subscribed = self
             .subscriptions
             .entry(event_name.to_owned())
@@ -87,7 +109,17 @@ impl EventBus {
 
         for wf_id in subscribers {
             let fire = Arc::clone(&self.fire);
-            let payload = payload.clone();
+            let mut payload = payload.clone();
+            if let Some(node_id) = self
+                .trigger_nodes
+                .get(&wf_id.to_string())
+                .and_then(|events| events.get(event_name).cloned())
+            {
+                payload.insert(
+                    FIRED_TRIGGER_NODE_ID_KEY.to_owned(),
+                    serde_json::Value::String(node_id),
+                );
+            }
             let wf_id = wf_id.clone();
 
             tokio::spawn(async move {
@@ -108,6 +140,7 @@ impl EventBus {
                 }
             }
         }
+        self.trigger_nodes.remove(&wf_key);
     }
 }
 

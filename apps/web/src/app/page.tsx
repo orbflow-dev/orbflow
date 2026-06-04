@@ -24,7 +24,7 @@ import { ConfirmDialog } from "@/core/components/confirm-dialog";
 import { ToastContainer } from "@/core/components/toast";
 import { ErrorBoundary } from "@/core/components/error-boundary";
 import { ThemeProvider, useTheme } from "@/core/context/theme-provider";
-import { api, BASE_URL, API_ROOT } from "@/lib/api";
+import { api, BASE_URL, API_ROOT, getAuthToken } from "@/lib/api";
 import "@/store/change-request-store"; // side-effect: initializes CR store with API client
 import "@/store/budget-store"; // side-effect: initializes budget store with API client
 import "@/store/alert-store"; // side-effect: initializes alert store with API client
@@ -253,6 +253,7 @@ export default function Home() {
   const orbflowConfig: OrbflowConfig = useMemo(
     () => ({
       apiBaseUrl: BASE_URL,
+      getAuthToken,
       onSave: async (wf) => {
         if (wf.id) {
           const updated = await api.workflows.update(wf.id, wf);

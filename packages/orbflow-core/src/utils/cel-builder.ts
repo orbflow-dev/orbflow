@@ -20,15 +20,27 @@ export function appendCelFieldAccess(prefix: string, key: string): string {
     : `${prefix}[${escapeCelStringLiteral(key)}]`;
 }
 
+/** Build a CEL path from already-tokenized path segments. */
+export function buildCelPath(root: string, keys: readonly string[]): string {
+  return keys.reduce((path, key) => appendCelFieldAccess(path, key), root);
+}
+
+/** Build a CEL path rooted at nodes["..."] from path segments. */
+export function buildNodeCelPathFromSegments(nodeId: string, segments: readonly string[]): string {
+  return buildCelPath(`nodes[${escapeCelStringLiteral(nodeId)}]`, segments);
+}
+
 /** Build a CEL path rooted at nodes["..."], escaping node IDs and field keys. */
 export function buildNodeCelPath(nodeId: string, sourcePath?: string): string {
   const root = `nodes[${escapeCelStringLiteral(nodeId)}]`;
   if (!sourcePath) return root;
 
-  return sourcePath
+  return buildCelPath(
+    root,
+    sourcePath
     .split(".")
     .filter(Boolean)
-    .reduce((path, key) => appendCelFieldAccess(path, key), root);
+  );
 }
 
 function formatCelLiteral(value: string | number | boolean): string {

@@ -18,6 +18,37 @@ export interface PaginatedResult<T> {
 
 export type DefinitionStatus = "draft" | "active" | "archived";
 
+export type CanonicalTriggerType = "manual" | "event" | "schedule" | "webhook";
+export type TriggerTypeInput = CanonicalTriggerType | "cron";
+
+export const CANONICAL_TRIGGER_TYPES = ["manual", "event", "schedule", "webhook"] as const;
+
+export function normalizeTriggerType(value: string): CanonicalTriggerType | undefined {
+  switch (value) {
+    case "manual":
+    case "event":
+    case "schedule":
+    case "webhook":
+      return value;
+    case "cron":
+      return "schedule";
+    default:
+      return undefined;
+  }
+}
+
+export interface LegacyTriggerData {
+  type: TriggerTypeInput;
+  config?: { cron?: string; event_name?: string; path?: string };
+}
+
+export interface TriggerNodeConfigData {
+  trigger_type: string;
+  cron?: string;
+  event_name?: string;
+  path?: string;
+}
+
 export interface Workflow {
   id: string;
   name: string;
@@ -27,6 +58,7 @@ export interface Workflow {
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   capability_edges?: CapabilityEdgeData[];
+  triggers?: LegacyTriggerData[];
   annotations?: AnnotationData[];
   created_at: string;
   updated_at: string;
@@ -52,7 +84,7 @@ export interface WorkflowNode {
   };
   capability_ports?: { key: string; capability_type: string; required?: boolean }[];
   metadata?: { description?: string; docs?: string; image_url?: string };
-  trigger_config?: { trigger_type: string; cron?: string; event_name?: string; path?: string };
+  trigger_config?: TriggerNodeConfigData;
   requires_approval?: boolean;
   position: { x: number; y: number };
   parent_id?: string;
@@ -106,6 +138,9 @@ export interface Instance {
   workflow_id: string;
   status: ExecutionStatus;
   node_states: Record<string, NodeState>;
+  context?: ExecutionContextData;
+  owner_id?: string;
+  parent_id?: string;
   /** Version of the workflow definition at execution time. Use get_workflow_version to fetch it. */
   workflow_version?: number;
   created_at: string;
@@ -122,6 +157,51 @@ export interface NodeState {
   attempt: number;
   started_at?: string;
   ended_at?: string;
+}
+
+export interface TriggerInfoData {
+  type: string;
+  fired_node_id?: string;
+  payload?: Record<string, unknown>;
+}
+
+export interface ExecutionContextData {
+  variables: Record<string, unknown>;
+  node_outputs: Record<string, Record<string, unknown>>;
+  trigger_data?: TriggerInfoData;
+  user_id?: string;
+}
+
+export const WIRE_VERSION = 1;
+
+export interface TaskMessage {
+  instance_id: string;
+  node_id: string;
+  dispatch_id?: string;
+  plugin_ref: string;
+  config?: Record<string, unknown>;
+  input?: Record<string, unknown>;
+  parameters?: Record<string, unknown>;
+  capabilities?: Record<string, unknown>;
+  attempt: number;
+  trace_context?: Record<string, string>;
+  v: number;
+}
+
+export interface ResultMessage {
+  result_id?: string;
+  instance_id: string;
+  node_id: string;
+  attempt: number;
+  dispatch_id?: string;
+  output?: Record<string, unknown>;
+  error?: string;
+  trace_context?: Record<string, string>;
+  v: number;
+}
+
+export function dispatchIdentity(instanceId: string, nodeId: string, attempt: number): string {
+  return `${instanceId}:${nodeId}:${attempt}`;
 }
 
 export interface TestNodeResult {
@@ -155,6 +235,17 @@ export interface NodeTypeSchema {
 }
 
 export type CredentialAccessTier = "proxy" | "scoped_token" | "raw";
+export type CredentialExecutionMode = "proxy" | "scoped_token" | "raw_secret";
+
+export interface CredentialExecutionSupport {
+  proxy?: boolean;
+  scoped_token?: boolean;
+  raw_secret?: boolean;
+}
+
+export function credentialTierRequiresExplicitPolicy(tier: CredentialAccessTier): boolean {
+  return tier !== "proxy";
+}
 
 export interface CredentialPolicy {
   allowed_tiers: CredentialAccessTier[];
@@ -320,6 +411,7 @@ export interface AuditVerifyResult {
   valid: boolean;
   error?: string;
   event_count: number;
+  signature_status?: "verified" | "unsigned" | "invalid" | "unsupported";
 }
 
 /* ═══════════════════════════════════════════════════════

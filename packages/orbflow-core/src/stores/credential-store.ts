@@ -22,6 +22,26 @@ function credentialToSummary(c: Credential): CredentialSummary {
   };
 }
 
+const SECRET_DATA_KEY_RE =
+  /credential|password|secret|token|api[_-]?key|apikey|private[_-]?key|access[_-]?key|client[_-]?secret/i;
+
+function isRedactedValue(value: unknown): boolean {
+  return (
+    typeof value === "string" &&
+    (value.toLowerCase().includes("redacted") || /[*\u2022]{3,}/.test(value))
+  );
+}
+
+/** Drop secret-like or redacted fields before storing credential data in UI state. */
+function credentialWithoutSecretData(c: Credential): Credential {
+  const data: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(c.data ?? {})) {
+    if (SECRET_DATA_KEY_RE.test(key) || isRedactedValue(value)) continue;
+    data[key] = value;
+  }
+  return { ...c, data };
+}
+
 /* ═══════════════════════════════════════════════════════
    API Client injection — call once at app startup
    ═══════════════════════════════════════════════════════ */
@@ -73,8 +93,9 @@ export const useCredentialStore = create<CredentialStore>((set) => ({
     const client = requireClient();
     try {
       const cred = await client.credentials.get(id);
-      set({ selectedCredential: cred });
-      return cred;
+      const safeCredential = credentialWithoutSecretData(cred);
+      set({ selectedCredential: safeCredential });
+      return safeCredential;
     } catch (e) {
       const msg = toMessage(e);
       set({ error: msg });
@@ -87,13 +108,14 @@ export const useCredentialStore = create<CredentialStore>((set) => ({
     const client = requireClient();
     try {
       const created = await client.credentials.create(cred);
+      const safeCreated = credentialWithoutSecretData(created);
       set((s) => ({
         credentials: [credentialToSummary(created), ...s.credentials],
       }));
       useToastStore
         .getState()
         .success("Credential created", `"${created.name}" has been saved`);
-      return created;
+      return safeCreated;
     } catch (e) {
       const msg = toMessage(e);
       useToastStore.getState().error("Failed to create credential", msg);
@@ -105,15 +127,16 @@ export const useCredentialStore = create<CredentialStore>((set) => ({
     const client = requireClient();
     try {
       const updated = await client.credentials.update(id, cred);
+      const safeUpdated = credentialWithoutSecretData(updated);
       set((s) => ({
         credentials: s.credentials.map((c) =>
           c.id === id ? credentialToSummary(updated) : c
         ),
         selectedCredential:
-          s.selectedCredential?.id === id ? updated : s.selectedCredential,
+          s.selectedCredential?.id === id ? safeUpdated : s.selectedCredential,
       }));
       useToastStore.getState().success("Credential updated");
-      return updated;
+      return safeUpdated;
     } catch (e) {
       const msg = toMessage(e);
       useToastStore.getState().error("Failed to update credential", msg);

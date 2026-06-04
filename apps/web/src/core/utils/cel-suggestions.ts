@@ -1,4 +1,5 @@
 import type { FieldSchema } from "../types/schema";
+import { appendCelFieldAccess, buildNodeCelPath } from "./cel-builder";
 
 /** Suggestion entry for the CEL expression autocomplete */
 export interface Suggestion {
@@ -48,7 +49,8 @@ export function flattenFields(
   const results: Suggestion[] = [];
 
   for (const f of fields) {
-    const celPath = `${celPrefix}.${f.key}`;
+    const prefix = depth === 0 ? buildNodeCelPath(nodeId) : celPrefix;
+    const celPath = appendCelFieldAccess(prefix, f.key);
     const label = labelPrefix ? `${labelPrefix}.${f.key}` : f.key;
     const detail = f.isBinary ? `${f.type} (binary)` : f.type;
 

@@ -3,8 +3,8 @@
 
 //! Budget persistence for PostgreSQL.
 
-use chrono::{DateTime, Utc};
-use sqlx::FromRow;
+use chrono::{DateTime, Duration, Months, Utc};
+use sqlx::{FromRow, Postgres, Transaction};
 
 use async_trait::async_trait;
 
@@ -44,6 +44,47 @@ fn period_to_str(p: BudgetPeriod) -> &'static str {
         BudgetPeriod::Weekly => "weekly",
         BudgetPeriod::Monthly => "monthly",
     }
+}
+
+fn next_reset_after(
+    mut reset_at: DateTime<Utc>,
+    period: BudgetPeriod,
+    now: DateTime<Utc>,
+) -> DateTime<Utc> {
+    while reset_at <= now {
+        reset_at = match period {
+            BudgetPeriod::Daily => reset_at + Duration::days(1),
+            BudgetPeriod::Weekly => reset_at + Duration::weeks(1),
+            BudgetPeriod::Monthly => reset_at
+                .checked_add_months(Months::new(1))
+                .unwrap_or_else(|| reset_at + Duration::days(31)),
+        };
+    }
+    reset_at
+}
+
+async fn rollover_if_expired(
+    tx: &mut Transaction<'_, Postgres>,
+    row: &mut BudgetRow,
+    now: DateTime<Utc>,
+) -> Result<(), OrbflowError> {
+    if row.reset_at > now {
+        return Ok(());
+    }
+
+    let next_reset = next_reset_after(row.reset_at, parse_period(&row.period), now);
+    sqlx::query("UPDATE budgets SET current_usd = 0, reset_at = $2 WHERE id = $1")
+        .bind(&row.id)
+        .bind(next_reset)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| {
+            OrbflowError::Database(format!("postgres: roll over budget '{}': {e}", row.id))
+        })?;
+
+    row.current_usd = 0.0;
+    row.reset_at = next_reset;
+    Ok(())
 }
 
 fn row_to_budget(row: &BudgetRow) -> AccountBudget {
@@ -155,26 +196,52 @@ impl BudgetStore for PgStore {
     }
 
     async fn check_budget(&self, workflow_id: &str) -> Result<Option<AccountBudget>, OrbflowError> {
-        let row: Option<BudgetRow> = sqlx::query_as(
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| OrbflowError::Database(format!("postgres: begin budget tx: {e}")))?;
+
+        let mut rows: Vec<BudgetRow> = sqlx::query_as(
             r#"SELECT id, workflow_id, team, period, limit_usd, current_usd, reset_at, created_at
                FROM budgets
                WHERE workflow_id = $1 OR workflow_id IS NULL
-               ORDER BY
-                   CASE WHEN current_usd >= limit_usd THEN 0 ELSE 1 END,
-                   CASE WHEN workflow_id = $1 THEN 0 ELSE 1 END,
-                   created_at ASC
-               LIMIT 1"#,
+               ORDER BY CASE WHEN workflow_id = $1 THEN 0 ELSE 1 END, created_at ASC
+               FOR UPDATE"#,
         )
         .bind(workflow_id)
-        .fetch_optional(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|e| {
             OrbflowError::Database(format!(
-                "postgres: check budget for workflow '{workflow_id}': {e}"
+                "postgres: lock budgets for workflow '{workflow_id}': {e}"
             ))
         })?;
 
-        Ok(row.as_ref().map(row_to_budget))
+        let now = Utc::now();
+        for row in &mut rows {
+            rollover_if_expired(&mut tx, row, now).await?;
+        }
+
+        rows.sort_by(|a, b| {
+            let a_exceeded = a.current_usd >= a.limit_usd;
+            let b_exceeded = b.current_usd >= b.limit_usd;
+            b_exceeded
+                .cmp(&a_exceeded)
+                .then_with(|| {
+                    let a_specific = a.workflow_id.as_deref() == Some(workflow_id);
+                    let b_specific = b.workflow_id.as_deref() == Some(workflow_id);
+                    b_specific.cmp(&a_specific)
+                })
+                .then_with(|| a.created_at.cmp(&b.created_at))
+        });
+        let budget = rows.first().map(row_to_budget);
+
+        tx.commit()
+            .await
+            .map_err(|e| OrbflowError::Database(format!("postgres: commit budget tx: {e}")))?;
+
+        Ok(budget)
     }
 
     async fn increment_cost(&self, workflow_id: &str, cost_usd: f64) -> Result<(), OrbflowError> {
@@ -184,7 +251,7 @@ impl BudgetStore for PgStore {
             .await
             .map_err(|e| OrbflowError::Database(format!("postgres: begin budget tx: {e}")))?;
 
-        let rows: Vec<BudgetRow> = sqlx::query_as(
+        let mut rows: Vec<BudgetRow> = sqlx::query_as(
             r#"SELECT id, workflow_id, team, period, limit_usd, current_usd, reset_at, created_at
                FROM budgets
                WHERE workflow_id = $1 OR workflow_id IS NULL
@@ -207,6 +274,11 @@ impl BudgetStore for PgStore {
             return Ok(());
         }
 
+        let now = Utc::now();
+        for row in &mut rows {
+            rollover_if_expired(&mut tx, row, now).await?;
+        }
+
         if let Some(row) = rows
             .iter()
             .find(|row| row.current_usd + cost_usd > row.limit_usd)
@@ -217,20 +289,20 @@ impl BudgetStore for PgStore {
             )));
         }
 
-        sqlx::query(
-            r#"UPDATE budgets
-               SET current_usd = current_usd + $2
-               WHERE workflow_id = $1 OR workflow_id IS NULL"#,
-        )
-        .bind(workflow_id)
-        .bind(cost_usd)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| {
-            OrbflowError::Database(format!(
-                "postgres: increment cost for workflow '{workflow_id}': {e}"
-            ))
-        })?;
+        for row in &rows {
+            sqlx::query("UPDATE budgets SET current_usd = $2, reset_at = $3 WHERE id = $1")
+                .bind(&row.id)
+                .bind(row.current_usd + cost_usd)
+                .bind(row.reset_at)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    OrbflowError::Database(format!(
+                        "postgres: increment cost for budget '{}' on workflow '{workflow_id}': {e}",
+                        row.id
+                    ))
+                })?;
+        }
 
         tx.commit()
             .await

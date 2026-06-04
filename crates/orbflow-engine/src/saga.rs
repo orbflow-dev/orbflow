@@ -162,7 +162,7 @@ async fn dispatch_pending_compensations(
         return Ok(());
     }
 
-    for node_id in &pending_nodes {
+    if let Some(node_id) = pending_nodes.first() {
         if let Err(e) = dispatch_compensation(engine, inst, wf, node_id).await {
             error!(
                 node = node_id.as_str(),
@@ -243,9 +243,15 @@ pub(crate) async fn handle_compensation_result(
 
     if all_done {
         finalize_compensation(engine, inst).await?;
+        return engine.save_instance(inst).await;
     }
 
-    engine.save_instance(inst).await
+    // Persist the completed compensation before dispatching the next one. If
+    // the process crashes after dispatch, recovery re-drives only still-pending
+    // compensation tasks.
+    engine.save_instance(inst).await?;
+    let wf = engine.store().get_workflow(&inst.workflow_id).await?;
+    dispatch_pending_compensations(engine, inst, &wf).await
 }
 
 async fn finalize_compensation(

@@ -1,11 +1,13 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { useChangeRequestStore, useCanvasStore } from "@orbflow/core/stores";
+import { useChangeRequestStore, useCanvasStore, usePanelStore } from "@orbflow/core/stores";
 import { useWorkflowStore } from "@/store/workflow-store";
-import type { CreateChangeRequestInput } from "@orbflow/core/types";
+import type { ConditionGroup, CreateChangeRequestInput, FieldMapping, ParameterValue, Workflow } from "@orbflow/core/types";
 import { Button } from "@/core/components/button";
 import { NodeIcon } from "@/core/components/icons";
+import { buildConditionExpression } from "@/core/utils/cel-builder";
+import { TRIGGER_TYPE_MAP, toWireTriggerType } from "@/core/utils/trigger-types";
 import { cn } from "@/lib/cn";
 
 /* =======================================================
@@ -34,6 +36,145 @@ const inputErrorCls = "border-red-500/60 focus:ring-red-500/30 focus:border-red-
 const labelCls = "text-[10px] font-semibold uppercase tracking-[0.1em] text-orbflow-text-ghost";
 
 /* =======================================================
+   Workflow definition serialization
+   ======================================================= */
+
+function serializeInputMappings(
+  inputMappings: Record<string, Record<string, FieldMapping>>,
+): Record<string, Record<string, unknown>> {
+  const nodeMappings: Record<string, Record<string, unknown>> = {};
+
+  for (const [nodeId, fields] of Object.entries(inputMappings)) {
+    for (const [key, mapping] of Object.entries(fields)) {
+      if (!nodeMappings[nodeId]) nodeMappings[nodeId] = {};
+      if (
+        mapping.mode === "static" &&
+        mapping.staticValue !== undefined &&
+        mapping.staticValue !== ""
+      ) {
+        nodeMappings[nodeId][key] = String(mapping.staticValue);
+      } else if (mapping.mode === "expression" && mapping.celExpression) {
+        nodeMappings[nodeId][key] = mapping.celExpression.startsWith("=")
+          ? mapping.celExpression
+          : `=${mapping.celExpression}`;
+      }
+    }
+  }
+
+  return nodeMappings;
+}
+
+function hasValidCondition(condition: ConditionGroup | undefined): condition is ConditionGroup {
+  if (!condition || condition.rules.length === 0) return false;
+  return condition.rules.every((rule) => {
+    if ("field" in rule) return Boolean(rule.field) && rule.value !== "";
+    return hasValidCondition(rule);
+  });
+}
+
+function serializeParameters(nodeParams: Record<string, ParameterValue> | undefined) {
+  const serializedParams = nodeParams
+    ? Object.values(nodeParams).map((pv) => ({
+        key: pv.key,
+        mode: pv.mode,
+        value: pv.mode === "static" ? pv.value : undefined,
+        expression: pv.mode === "expression" ? pv.expression : undefined,
+      }))
+    : undefined;
+  return serializedParams?.length ? serializedParams : undefined;
+}
+
+function buildProposedDefinition(baseWorkflow: Workflow | null): Record<string, unknown> {
+  const { nodes, edges, capabilityEdges, annotations } = useCanvasStore.getState();
+  const { inputMappings, parameterValues, edgeConditions } = usePanelStore.getState();
+  const nodeMappings = serializeInputMappings(inputMappings);
+
+  return {
+    name: baseWorkflow?.name ?? "Proposed workflow",
+    description: baseWorkflow?.description || undefined,
+    nodes: nodes
+      .filter((n) => n.type === "task")
+      .map((n) => {
+        const nodeId = n.id;
+        const nodeParams = parameterValues[nodeId];
+        const pluginRef = (n.data.pluginRef as string) || "";
+        const nodeKind =
+          (n.data.nodeKind as "trigger" | "action" | "capability" | undefined) ||
+          (pluginRef.startsWith("builtin:trigger-") ? "trigger" : undefined);
+
+        let triggerConfig: { trigger_type: string; cron?: string; event_name?: string; path?: string } | undefined;
+        if (nodeKind === "trigger") {
+          const triggerType = toWireTriggerType(TRIGGER_TYPE_MAP[pluginRef] || "manual");
+          triggerConfig = { trigger_type: triggerType };
+          if (triggerType === "schedule" && nodeParams) {
+            const cronParam = Object.values(nodeParams).find((p) => p.key === "cron");
+            if (cronParam?.value) triggerConfig.cron = String(cronParam.value);
+          }
+          if (triggerType === "webhook" && nodeParams) {
+            const pathParam = Object.values(nodeParams).find((p) => p.key === "path");
+            if (pathParam?.value) triggerConfig.path = String(pathParam.value);
+          }
+          if (triggerType === "event" && nodeParams) {
+            const eventParam = Object.values(nodeParams).find((p) => p.key === "event_name");
+            if (eventParam?.value) triggerConfig.event_name = String(eventParam.value);
+          }
+        }
+
+        return {
+          id: nodeId,
+          name: (n.data.label as string) || nodeId,
+          kind: nodeKind,
+          type: pluginRef.startsWith("plugin:") ? "plugin" : "builtin",
+          plugin_ref: pluginRef,
+          input_mapping: nodeMappings[nodeId] || undefined,
+          parameters: serializeParameters(nodeParams),
+          trigger_config: triggerConfig,
+          requires_approval: (n.data.requiresApproval as boolean) || undefined,
+          position: n.position,
+          parent_id: n.parentId || undefined,
+        };
+      }),
+    edges: edges.map((e) => {
+      const condition = edgeConditions[e.id];
+      return {
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        condition: hasValidCondition(condition) ? buildConditionExpression(condition) : undefined,
+      };
+    }),
+    capability_edges: capabilityEdges.length
+      ? capabilityEdges.map((ce) => ({
+          id: ce.id,
+          source_node_id: ce.sourceNodeId,
+          target_node_id: ce.targetNodeId,
+          target_port_key: ce.targetPortKey,
+        }))
+      : undefined,
+    annotations: annotations.length
+      ? annotations.map((a) => {
+          const prefix = a.type === "text" ? "text_" : "sticky_";
+          const xyNode = nodes.find((n) => n.id === `${prefix}${a.id}`);
+          const width = xyNode?.data?.width ?? xyNode?.style?.width;
+          const height = xyNode?.data?.height ?? xyNode?.style?.height;
+          const style = {
+            ...(a.style ?? {}),
+            ...(typeof width === "number" ? { width } : {}),
+            ...(typeof height === "number" ? { height } : {}),
+          };
+          return {
+            id: a.id,
+            type: a.type,
+            content: a.content,
+            position: xyNode?.position ?? a.position,
+            style: Object.keys(style).length ? style : undefined,
+          };
+        })
+      : undefined,
+  };
+}
+
+/* =======================================================
    Component
    ======================================================= */
 
@@ -51,7 +192,8 @@ export function ChangeRequestCreate({
   const titleRef = useRef<HTMLInputElement>(null);
 
   const store = useChangeRequestStore();
-  const workflowVersion = useWorkflowStore((s) => s.selectedWorkflow?.version ?? 1);
+  const selectedWorkflow = useWorkflowStore((s) => s.selectedWorkflow);
+  const workflowVersion = selectedWorkflow?.version ?? 1;
 
   useEffect(() => {
     titleRef.current?.focus();
@@ -86,9 +228,7 @@ export function ChangeRequestCreate({
 
       setSubmitting(true);
       try {
-        const canvasNodes = useCanvasStore.getState().nodes;
-        const canvasEdges = useCanvasStore.getState().edges;
-        const proposed_definition = { nodes: canvasNodes, edges: canvasEdges };
+        const proposed_definition = buildProposedDefinition(selectedWorkflow);
 
         const input: CreateChangeRequestInput = {
           title: title.trim(),
@@ -113,7 +253,7 @@ export function ChangeRequestCreate({
         setSubmitting(false);
       }
     },
-    [title, description, author, reviewers, workflowId, workflowVersion, store, onCreated, validate],
+    [title, description, author, reviewers, workflowId, workflowVersion, selectedWorkflow, store, onCreated, validate],
   );
 
   const handleKeyDown = useCallback(

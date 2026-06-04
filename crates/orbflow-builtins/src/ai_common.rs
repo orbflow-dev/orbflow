@@ -227,6 +227,12 @@ impl AiConfig {
         let api_key = string_val(cfg, "api_key", "");
         // Ollama doesn't require an API key; all other providers do.
         if api_key.is_empty() && provider != AiProvider::Ollama {
+            if matches!(cfg.get("api_key"), Some(Value::Null)) {
+                return Err(OrbflowError::InvalidNodeConfig(
+                    "ai node: credential secret was redacted before worker execution; configure a proxy-capable AI path or explicitly allow raw credential access"
+                        .into(),
+                ));
+            }
             return Err(OrbflowError::InvalidNodeConfig(
                 "ai node: api_key is required".into(),
             ));

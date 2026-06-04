@@ -460,6 +460,64 @@ async fn test_merge_approved_cr_applies_definition() {
 }
 
 #[tokio::test]
+async fn test_merge_rejects_reactflow_shaped_definition_before_persistence() {
+    let store = MemStore::new();
+
+    let wf = test_workflow("wf-reactflow-reject");
+    store.create_workflow(&wf).await.unwrap();
+
+    let mut cr = make_change_request(
+        "cr-reactflow",
+        "wf-reactflow-reject",
+        1,
+        ChangeRequestStatus::Approved,
+    );
+    cr.proposed_definition = json!({
+        "nodes": [{
+            "id": "reactflow-node",
+            "type": "builtin:log",
+            "position": { "x": 100, "y": 200 },
+            "data": {
+                "label": "ReactFlow-only shape",
+                "plugin_ref": "builtin:log"
+            }
+        }],
+        "edges": [{
+            "id": "reactflow-edge",
+            "source": "start",
+            "target": "reactflow-node",
+            "type": "smoothstep"
+        }]
+    });
+    store.create_change_request(&cr).await.unwrap();
+
+    let err = store
+        .merge_change_request("cr-reactflow", 1, &cr.proposed_definition)
+        .await
+        .expect_err("ReactFlow-shaped CR definitions must be rejected before merge");
+
+    assert!(
+        err.is_validation_error(),
+        "unnormalizable CR definition should fail as validation error, got {err:?}"
+    );
+
+    let after_cr = store.get_change_request("cr-reactflow").await.unwrap();
+    assert_eq!(
+        after_cr.status,
+        ChangeRequestStatus::Approved,
+        "rejected merge must not mark the CR as merged"
+    );
+
+    let after_wf = store
+        .get_workflow(&WorkflowId::new("wf-reactflow-reject"))
+        .await
+        .unwrap();
+    assert_eq!(after_wf.version, 1);
+    assert_eq!(after_wf.nodes.len(), 1);
+    assert_eq!(after_wf.nodes[0].id, "start");
+}
+
+#[tokio::test]
 async fn test_merge_nonexistent_cr_returns_not_found() {
     let store = MemStore::new();
 

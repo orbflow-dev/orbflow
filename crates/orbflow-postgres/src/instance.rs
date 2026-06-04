@@ -238,10 +238,15 @@ impl AtomicInstanceCreator for PgStore {
         })?;
         let prev_hash = orbflow_core::audit::GENESIS_HASH.to_string();
         let event_hash = orbflow_core::audit::compute_event_hash(&event_bytes, &prev_hash);
+        let signature: Option<String> = self
+            .opts
+            .audit_signer
+            .as_ref()
+            .map(|signer| signer.sign(event_hash.as_bytes()));
 
         sqlx::query(
-            r#"INSERT INTO events (instance_id, event_type, data, created_at, event_hash, prev_hash)
-               VALUES ($1, $2, $3, $4, $5, $6)"#,
+            r#"INSERT INTO events (instance_id, event_type, data, created_at, event_hash, prev_hash, signature)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
         )
         .bind(inst.id.0.as_str())
         .bind(&event_type_str)
@@ -249,6 +254,7 @@ impl AtomicInstanceCreator for PgStore {
         .bind(event.timestamp())
         .bind(&event_hash)
         .bind(&prev_hash)
+        .bind(&signature)
         .execute(&mut *tx)
         .await
         .map_err(|e| {

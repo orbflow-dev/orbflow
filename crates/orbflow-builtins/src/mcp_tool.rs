@@ -11,19 +11,122 @@ use orbflow_core::OrbflowError;
 use orbflow_core::ports::{
     FieldSchema, FieldType, NodeExecutor, NodeInput, NodeOutput, NodeSchema, NodeSchemaProvider,
 };
-use orbflow_mcp::client::McpClient;
+use orbflow_mcp::schema::{
+    ClientInfo, InitializeParams, JsonRpcRequest, McpContent, McpToolResult, ToolCallParams,
+};
+use orbflow_mcp::transport::{HttpTransport, McpLocalhostPolicy};
 
 /// Validates that an MCP server URL does not point to private/internal addresses (SSRF protection).
-async fn validate_mcp_url(url: &str) -> Result<(), OrbflowError> {
+async fn validate_mcp_url(url: &str, policy: McpLocalhostPolicy) -> Result<(), OrbflowError> {
     let parsed = url::Url::parse(url)
         .map_err(|e| OrbflowError::InvalidNodeConfig(format!("mcp_tool: invalid URL: {e}")))?;
-    if parsed.scheme() != "https" {
+
+    let host_is_loopback = match parsed.host() {
+        Some(url::Host::Ipv4(v4)) => v4.is_loopback(),
+        Some(url::Host::Ipv6(v6)) => v6.is_loopback(),
+        _ => parsed
+            .host_str()
+            .is_some_and(|h| h.eq_ignore_ascii_case("localhost")),
+    };
+
+    if parsed.scheme() == "http" && !(policy.allow_localhost() && host_is_loopback) {
         return Err(OrbflowError::InvalidNodeConfig(
-            "mcp_tool: server_url must use HTTPS".into(),
+            "mcp_tool: server_url must use HTTPS unless allow_localhost is enabled for local dev"
+                .into(),
         ));
     }
 
-    crate::ssrf::validate_url_not_private_async(url, false).await
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err(OrbflowError::InvalidNodeConfig(
+            "mcp_tool: server_url scheme must be http or https".into(),
+        ));
+    }
+
+    crate::ssrf::validate_url_not_private_async(url, policy.allow_localhost()).await
+}
+
+fn config_bool(input: &NodeInput, key: &str) -> Result<bool, OrbflowError> {
+    let value = input
+        .config
+        .as_ref()
+        .and_then(|c| c.get(key))
+        .or_else(|| input.parameters.as_ref().and_then(|p| p.get(key)));
+
+    match value {
+        None => Ok(false),
+        Some(serde_json::Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(OrbflowError::InvalidNodeConfig(format!(
+            "mcp_tool: {key} must be a boolean"
+        ))),
+    }
+}
+
+async fn initialize_mcp(transport: &HttpTransport) -> Result<(), OrbflowError> {
+    let params = InitializeParams {
+        protocol_version: "2024-11-05".into(),
+        capabilities: serde_json::json!({}),
+        client_info: ClientInfo {
+            name: "orbflow".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+        },
+    };
+
+    let request = JsonRpcRequest::new(
+        "initialize",
+        Some(
+            serde_json::to_value(&params)
+                .map_err(|e| OrbflowError::Internal(format!("mcp_tool: serialize params: {e}")))?,
+        ),
+    )
+    .with_id(1);
+    let response = transport.send(&request).await?;
+    if let Some(err) = response.error {
+        return Err(OrbflowError::Internal(format!(
+            "MCP initialize failed: {}",
+            err.message
+        )));
+    }
+
+    let initialized = JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        id: serde_json::Value::Null,
+        method: "notifications/initialized".into(),
+        params: None,
+    };
+    let _ = transport.send(&initialized).await;
+
+    Ok(())
+}
+
+async fn call_mcp_tool(
+    transport: &HttpTransport,
+    tool_name: &str,
+    arguments: HashMap<String, serde_json::Value>,
+) -> Result<McpToolResult, OrbflowError> {
+    let params = ToolCallParams {
+        name: tool_name.into(),
+        arguments,
+    };
+    let request = JsonRpcRequest::new(
+        "tools/call",
+        Some(
+            serde_json::to_value(&params)
+                .map_err(|e| OrbflowError::Internal(format!("mcp_tool: serialize params: {e}")))?,
+        ),
+    )
+    .with_id(2);
+
+    let response = transport.send(&request).await?;
+    if let Some(err) = response.error {
+        return Err(OrbflowError::Internal(format!(
+            "MCP tools/call '{}' failed: {}",
+            tool_name, err.message
+        )));
+    }
+
+    let result = response.result.unwrap_or(serde_json::Value::Null);
+    serde_json::from_value::<McpToolResult>(result)
+        .map_err(|e| OrbflowError::Internal(format!("MCP result parse error: {e}")))
 }
 
 /// Builtin node that calls an MCP tool on an external server.
@@ -55,23 +158,29 @@ impl NodeExecutor for McpToolNode {
 
         // Build arguments from input mapping.
         let arguments: HashMap<String, serde_json::Value> = input.input.clone().unwrap_or_default();
+        let allow_localhost = config_bool(input, "allow_localhost")?;
+        let localhost_policy = if allow_localhost {
+            McpLocalhostPolicy::AllowForDev
+        } else {
+            McpLocalhostPolicy::Deny
+        };
 
         // Validate URL to prevent SSRF against internal services.
-        validate_mcp_url(server_url).await?;
+        validate_mcp_url(server_url, localhost_policy).await?;
 
         // Connect to MCP server.
-        let mut client = McpClient::new(server_url)?;
-        client.initialize().await?;
+        let transport = HttpTransport::new_with_localhost_policy(server_url, localhost_policy)?;
+        initialize_mcp(&transport).await?;
 
         // Call the tool.
-        let result = client.call_tool(tool_name, arguments).await?;
+        let result = call_mcp_tool(&transport, tool_name, arguments).await?;
 
         // Collect text content from the result.
         let text_content: Vec<String> = result
             .content
             .iter()
             .filter_map(|c| match c {
-                orbflow_mcp::schema::McpContent::Text { text } => Some(text.clone()),
+                McpContent::Text { text } => Some(text.clone()),
                 _ => None,
             })
             .collect();
@@ -166,7 +275,16 @@ impl NodeSchemaProvider for McpToolNode {
             ],
             parameters: vec![],
             capability_ports: vec![],
-            settings: vec![],
+            settings: vec![FieldSchema {
+                key: "allow_localhost".into(),
+                label: "Allow Localhost".into(),
+                field_type: FieldType::Boolean,
+                required: false,
+                description: Some("Allow HTTP loopback MCP servers for local development".into()),
+                default: Some(serde_json::json!(false)),
+                r#enum: vec![],
+                credential_type: None,
+            }],
             provides_capability: None,
         }
     }

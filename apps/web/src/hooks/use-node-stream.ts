@@ -27,6 +27,8 @@ export interface UseNodeStreamOptions {
   url: string | null;
   /** Set to true to start streaming. */
   enabled: boolean;
+  /** Optional bearer token. When present, fetch streaming is used so the token stays in headers, not the URL. */
+  authToken?: string;
   /** Called for each data chunk (e.g., LLM token). */
   onData?: (payload: unknown, seq: number) => void;
   /** Called when the stream completes. */
@@ -55,6 +57,7 @@ export function useNodeStream(options: UseNodeStreamOptions): UseNodeStreamRetur
   const [finalOutput, setFinalOutput] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const tokensRef = useRef<string[]>([]);
 
   const close = useCallback(() => {
@@ -62,6 +65,8 @@ export function useNodeStream(options: UseNodeStreamOptions): UseNodeStreamRetur
       sourceRef.current.close();
       sourceRef.current = null;
     }
+    abortRef.current?.abort();
+    abortRef.current = null;
     setIsStreaming(false);
   }, []);
 
@@ -78,12 +83,9 @@ export function useNodeStream(options: UseNodeStreamOptions): UseNodeStreamRetur
     setError(null);
     setIsStreaming(true);
 
-    const source = new EventSource(url);
-    sourceRef.current = source;
-
-    source.addEventListener("data", (event) => {
+    const handleDataEvent = (data: string) => {
       try {
-        const msg: StreamMessage = JSON.parse(event.data);
+        const msg: StreamMessage = JSON.parse(data);
         const payload = msg.chunk?.payload;
 
         // Extract token string if present.
@@ -96,13 +98,13 @@ export function useNodeStream(options: UseNodeStreamOptions): UseNodeStreamRetur
       } catch {
         // Ignore parse errors on data chunks.
       }
-    });
+    };
 
-    source.addEventListener("done", (event) => {
+    const handleDoneEvent = (data: string) => {
       // Final flush so no tokens are lost between last interval tick and close.
       setTokens([...tokensRef.current]);
       try {
-        const msg: StreamMessage = JSON.parse(event.data);
+        const msg: StreamMessage = JSON.parse(data);
         const output = (msg.chunk as { output?: { data?: Record<string, unknown> } })?.output?.data || {};
         setFinalOutput(output);
         onDone?.(output);
@@ -110,14 +112,12 @@ export function useNodeStream(options: UseNodeStreamOptions): UseNodeStreamRetur
         // Ignore.
       }
       close();
-    });
+    };
 
-    source.addEventListener("error", (event) => {
-      // Check if it's a custom error event with data.
-      const messageEvent = event as MessageEvent;
-      if (messageEvent.data) {
+    const handleErrorEvent = (data?: string) => {
+      if (data) {
         try {
-          const msg: StreamMessage = JSON.parse(messageEvent.data);
+          const msg: StreamMessage = JSON.parse(data);
           const errMsg = (msg.chunk as { message?: string })?.message || "Stream error";
           setError(errMsg);
           onError?.(errMsg);
@@ -126,11 +126,96 @@ export function useNodeStream(options: UseNodeStreamOptions): UseNodeStreamRetur
           onError?.("Stream error");
         }
       } else {
-        // EventSource connection error (e.g., server disconnected).
         setError("Connection lost");
         onError?.("Connection lost");
       }
       close();
+    };
+
+    if (options.authToken) {
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      const readStream = async () => {
+        try {
+          const response = await fetch(url, {
+            headers: {
+              Accept: "text/event-stream",
+              Authorization: `Bearer ${options.authToken}`,
+            },
+            signal: controller.signal,
+          });
+          if (!response.ok) {
+            handleErrorEvent(JSON.stringify({ chunk: { message: `Stream failed with status ${response.status}` } }));
+            return;
+          }
+          if (!response.body) {
+            handleErrorEvent(JSON.stringify({ chunk: { message: "Stream response body was empty" } }));
+            return;
+          }
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+
+          while (!controller.signal.aborted) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            let boundary = buffer.indexOf("\n\n");
+            while (boundary !== -1) {
+              const rawEvent = buffer.slice(0, boundary);
+              buffer = buffer.slice(boundary + 2);
+              const lines = rawEvent.split(/\r?\n/);
+              const eventName = lines.find((line) => line.startsWith("event:"))?.slice(6).trim() || "data";
+              const data = lines
+                .filter((line) => line.startsWith("data:"))
+                .map((line) => line.slice(5).trimStart())
+                .join("\n");
+
+              if (eventName === "done") handleDoneEvent(data);
+              else if (eventName === "error") handleErrorEvent(data);
+              else if (data) handleDataEvent(data);
+
+              boundary = buffer.indexOf("\n\n");
+            }
+          }
+        } catch (err) {
+          if (!controller.signal.aborted) {
+            const message = err instanceof Error ? err.message : "Connection lost";
+            handleErrorEvent(JSON.stringify({ chunk: { message } }));
+          }
+        }
+      };
+
+      void readStream();
+      return () => {
+        controller.abort();
+        abortRef.current = null;
+      };
+    }
+
+    const source = new EventSource(url);
+    sourceRef.current = source;
+
+    source.addEventListener("data", (event) => {
+      handleDataEvent(event.data);
+    });
+
+    source.addEventListener("done", (event) => {
+      handleDoneEvent(event.data);
+    });
+
+    source.addEventListener("error", (event) => {
+      // Check if it's a custom error event with data.
+      const messageEvent = event as MessageEvent;
+      if (messageEvent.data) {
+        handleErrorEvent(messageEvent.data);
+      } else {
+        // EventSource connection error (e.g., server disconnected).
+        handleErrorEvent();
+      }
     });
 
     return () => {

@@ -3,12 +3,14 @@
 import { useCallback, useEffect, useReducer, useMemo } from "react";
 import { useCredentialStore } from "@/store/credential-store";
 import type { CredentialSummary, CredentialTypeSchema, CredentialAccessTier } from "@/lib/api";
+import type { CredentialCreate } from "@orbflow/core/types";
 
 export interface FormState {
   name: string;
   type: string;
   description: string;
   data: Record<string, unknown>;
+  dirtyDataKeys: string[];
   accessTier: CredentialAccessTier;
   allowedDomains: string;
   saving: boolean;
@@ -21,6 +23,7 @@ export type FormAction =
   | { type: "SET_TYPE"; formType: string; defaults: Record<string, unknown> }
   | { type: "SET_DESCRIPTION"; description: string }
   | { type: "SET_DATA"; data: Record<string, unknown> }
+  | { type: "HYDRATE_DATA"; data: Record<string, unknown> }
   | { type: "SET_FIELD"; key: string; value: unknown }
   | { type: "ADD_CUSTOM_FIELD"; key: string }
   | { type: "REMOVE_CUSTOM_FIELD"; key: string }
@@ -36,6 +39,7 @@ const INITIAL_STATE: FormState = {
   type: "",
   description: "",
   data: {},
+  dirtyDataKeys: [],
   accessTier: "proxy",
   allowedDomains: "",
   saving: false,
@@ -48,19 +52,39 @@ function formReducer(state: FormState, action: FormAction): FormState {
     case "SET_NAME":
       return { ...state, name: action.name };
     case "SET_TYPE":
-      return { ...state, type: action.formType, data: action.defaults };
+      return { ...state, type: action.formType, data: action.defaults, dirtyDataKeys: [] };
     case "SET_DESCRIPTION":
       return { ...state, description: action.description };
     case "SET_DATA":
-      return { ...state, data: action.data };
+      return { ...state, data: action.data, dirtyDataKeys: Object.keys(action.data) };
+    case "HYDRATE_DATA":
+      return { ...state, data: action.data, dirtyDataKeys: [] };
     case "SET_FIELD":
-      return { ...state, data: { ...state.data, [action.key]: action.value } };
+      return {
+        ...state,
+        data: { ...state.data, [action.key]: action.value },
+        dirtyDataKeys: state.dirtyDataKeys.includes(action.key)
+          ? state.dirtyDataKeys
+          : [...state.dirtyDataKeys, action.key],
+      };
     case "ADD_CUSTOM_FIELD":
-      return { ...state, data: { ...state.data, [action.key]: "" } };
+      return {
+        ...state,
+        data: { ...state.data, [action.key]: "" },
+        dirtyDataKeys: state.dirtyDataKeys.includes(action.key)
+          ? state.dirtyDataKeys
+          : [...state.dirtyDataKeys, action.key],
+      };
     case "REMOVE_CUSTOM_FIELD": {
       const next = { ...state.data };
       delete next[action.key];
-      return { ...state, data: next };
+      return {
+        ...state,
+        data: next,
+        dirtyDataKeys: state.dirtyDataKeys.includes(action.key)
+          ? state.dirtyDataKeys
+          : [...state.dirtyDataKeys, action.key],
+      };
     }
     case "SET_SAVING":
       return { ...state, saving: action.saving };
@@ -69,14 +93,35 @@ function formReducer(state: FormState, action: FormAction): FormState {
     case "SET_ALLOWED_DOMAINS":
       return { ...state, allowedDomains: action.domains };
     case "START_EDIT":
-      return { ...state, editingId: action.id, name: action.name, type: action.formType, description: action.description ?? "", data: {}, accessTier: action.accessTier ?? "proxy", allowedDomains: action.allowedDomains ?? "", showForm: true };
+      return { ...state, editingId: action.id, name: action.name, type: action.formType, description: action.description ?? "", data: {}, dirtyDataKeys: [], accessTier: action.accessTier ?? "proxy", allowedDomains: action.allowedDomains ?? "", showForm: true };
     case "START_CREATE":
-      return { ...INITIAL_STATE, showForm: true, type: action.formType ?? "", data: action.defaults ?? {} };
+      return { ...INITIAL_STATE, showForm: true, type: action.formType ?? "", data: action.defaults ?? {}, dirtyDataKeys: [] };
     case "RESET":
       return INITIAL_STATE;
     default:
       return state;
   }
+}
+
+function hasCredentialValue(value: unknown): boolean {
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (value && typeof value === "object") return Object.keys(value).length > 0;
+  return value !== undefined && value !== null;
+}
+
+function pickDirtyCredentialData(
+  data: Record<string, unknown>,
+  keys: string[],
+): Record<string, unknown> | undefined {
+  const picked: Record<string, unknown> = {};
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(data, key)) continue;
+    const value = data[key];
+    if (!hasCredentialValue(value)) continue;
+    picked[key] = value;
+  }
+  return Object.keys(picked).length > 0 ? picked : undefined;
 }
 
 export function useCredentialForm(credentialTypes: CredentialTypeSchema[]) {
@@ -132,7 +177,7 @@ export function useCredentialForm(credentialTypes: CredentialTypeSchema[]) {
   // Populate formData when selectedCredential loads during edit
   useEffect(() => {
     if (form.editingId && selectedCredential?.id === form.editingId && selectedCredential.data) {
-      dispatch({ type: "SET_DATA", data: { ...selectedCredential.data } });
+      dispatch({ type: "HYDRATE_DATA", data: { ...selectedCredential.data } });
     }
   }, [form.editingId, selectedCredential]);
 
@@ -145,11 +190,10 @@ export function useCredentialForm(credentialTypes: CredentialTypeSchema[]) {
         .map((d) => d.trim())
         .filter(Boolean);
 
-      const payload = {
+      const payload: Partial<CredentialCreate> = {
         name: form.name,
         type: form.type,
         description: form.description,
-        data: form.data,
         access_tier: form.accessTier,
         policy: {
           allowed_tiers: [form.accessTier],
@@ -158,13 +202,15 @@ export function useCredentialForm(credentialTypes: CredentialTypeSchema[]) {
         },
       };
       if (form.editingId) {
+        const changedData = pickDirtyCredentialData(form.data, form.dirtyDataKeys);
+        if (changedData) payload.data = changedData;
         await updateCredential(form.editingId, payload);
       } else {
-        await createCredential(payload);
+        payload.data = form.data;
+        await createCredential(payload as CredentialCreate);
       }
       resetForm();
-    } catch (err) {
-      // Toast handled by store
+    } catch {
       // Toast handled by store
     } finally {
       dispatch({ type: "SET_SAVING", saving: false });

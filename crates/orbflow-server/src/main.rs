@@ -179,8 +179,14 @@ async fn main() {
         );
     }
     // --- RBAC policy ---
+    let bootstrap_admin = load_bootstrap_admin();
     let rbac_store: Arc<dyn RbacStore> = store.clone() as Arc<dyn RbacStore>;
-    let rbac_policy_arc = setup_rbac(&rbac_store).await;
+    let rbac_policy_arc = setup_rbac(
+        &rbac_store,
+        cfg.server.auth_token.is_some(),
+        bootstrap_admin.as_deref(),
+    )
+    .await;
 
     let (plugin_index, plugin_installer) = build_plugin_index(&cfg.plugins.dir);
     let plugin_manager = build_plugin_manager(&cfg.plugins.dir);
@@ -199,6 +205,7 @@ async fn main() {
         plugin_index,
         plugin_installer,
         Some(plugin_manager.clone()),
+        bootstrap_admin.clone(),
     );
 
     let app = create_router_with_trigger_registry(http_opts, Some(trigger_registry))
@@ -293,8 +300,14 @@ async fn start_http_only(
     bus: Arc<NatsBus>,
     store: Arc<PgStore>,
 ) {
+    let bootstrap_admin = load_bootstrap_admin();
     let rbac_store: Arc<dyn RbacStore> = store.clone() as Arc<dyn RbacStore>;
-    let rbac_policy_arc = setup_rbac(&rbac_store).await;
+    let rbac_policy_arc = setup_rbac(
+        &rbac_store,
+        cfg.server.auth_token.is_some(),
+        bootstrap_admin.as_deref(),
+    )
+    .await;
 
     let (plugin_index, plugin_installer) = build_plugin_index(&cfg.plugins.dir);
     let plugin_manager = build_plugin_manager(&cfg.plugins.dir);
@@ -310,6 +323,7 @@ async fn start_http_only(
         plugin_index,
         plugin_installer,
         Some(plugin_manager),
+        bootstrap_admin.clone(),
     );
 
     let app = create_router(http_opts).unwrap_or_else(|e| {
@@ -365,6 +379,7 @@ fn build_http_options(
     plugin_index: Option<Arc<dyn PluginIndex>>,
     plugin_installer: Option<Arc<dyn orbflow_core::PluginInstaller>>,
     plugin_manager: Option<Arc<dyn PluginManager>>,
+    bootstrap_admin: Option<String>,
 ) -> HttpApiOptions {
     let cred = match &credential_store {
         Some(cs) => {
@@ -392,19 +407,29 @@ fn build_http_options(
         analytics_store: Some(store.clone() as Arc<dyn orbflow_core::AnalyticsStore>),
         alert_store: Some(store.clone() as Arc<dyn AlertStore>),
         trust_x_user_id: false,
-        bootstrap_admin: std::env::var("ORBFLOW_BOOTSTRAP_ADMIN").ok().and_then(|v| {
-            if v == "anonymous" {
-                tracing::error!("ORBFLOW_BOOTSTRAP_ADMIN cannot be 'anonymous' — ignoring");
-                None
-            } else {
-                Some(v)
-            }
-        }),
+        bootstrap_admin,
         plugin_manager,
         plugins_dir: Some(cfg.plugins.dir.clone()),
         cors_origins: cfg.server.cors_origins.clone(),
         rate_limit: cfg.server.rate_limit.clone(),
     }
+}
+
+fn load_bootstrap_admin() -> Option<String> {
+    std::env::var("ORBFLOW_BOOTSTRAP_ADMIN")
+        .ok()
+        .and_then(|value| {
+            let user_id = value.trim();
+            if user_id.is_empty() {
+                return None;
+            }
+            if user_id == "anonymous" {
+                tracing::error!("ORBFLOW_BOOTSTRAP_ADMIN cannot be 'anonymous' — ignoring");
+                None
+            } else {
+                Some(user_id.to_string())
+            }
+        })
 }
 
 struct TriggerRegistryAdapter {
@@ -464,6 +489,8 @@ impl TriggerRegistry for TriggerRegistryAdapter {
 /// made by other server instances are picked up without a restart.
 async fn setup_rbac(
     rbac_store: &Arc<dyn RbacStore>,
+    auth_enabled: bool,
+    bootstrap_admin: Option<&str>,
 ) -> Option<Arc<RwLock<orbflow_core::rbac::RbacPolicy>>> {
     let rbac_policy_arc = match rbac_store.load_policy().await {
         Ok(policy) if !policy.roles.is_empty() || !policy.bindings.is_empty() => {
@@ -473,6 +500,21 @@ async fn setup_rbac(
                 "RBAC policy loaded from database"
             );
             Some(Arc::new(RwLock::new(policy)))
+        }
+        Ok(_) if auth_enabled => {
+            if let Some(admin) = bootstrap_admin {
+                tracing::warn!(
+                    bootstrap_admin = %admin,
+                    "RBAC policy store is empty while auth is enabled — failing closed except bootstrap admin"
+                );
+            } else {
+                tracing::warn!(
+                    "RBAC policy store is empty while auth is enabled — failing closed; set ORBFLOW_BOOTSTRAP_ADMIN to bootstrap policy management"
+                );
+            }
+            Some(Arc::new(RwLock::new(
+                orbflow_core::rbac::RbacPolicy::with_defaults(),
+            )))
         }
         Ok(_) => {
             tracing::info!(
@@ -496,7 +538,13 @@ async fn setup_rbac(
             loop {
                 interval.tick().await;
                 match reload_store.load_policy().await {
-                    Ok(new_policy) => {
+                    Ok(mut new_policy) => {
+                        if auth_enabled
+                            && new_policy.roles.is_empty()
+                            && new_policy.bindings.is_empty()
+                        {
+                            new_policy = orbflow_core::rbac::RbacPolicy::with_defaults();
+                        }
                         if let Ok(mut guard) = policy.write() {
                             *guard = new_policy;
                             tracing::debug!("RBAC policy reloaded from store");

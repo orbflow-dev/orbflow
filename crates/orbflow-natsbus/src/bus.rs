@@ -3,6 +3,7 @@
 
 //! NATS JetStream implementation of [`Bus`].
 
+use std::fmt::Write as _;
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -19,6 +20,8 @@ use orbflow_core::ports::{Bus, MsgHandler};
 const STREAM_NAME: &str = "ORBFLOW";
 const STREAM_SUBJECT_PREFIX: &str = "orbflow.stream.";
 const PLUGIN_RELOAD_SUBJECT: &str = "orbflow.worker.reload-plugins";
+const DEFAULT_CONSUMER_ACK_WAIT_SECS: u64 = 330;
+const DEFAULT_MAX_ACK_PENDING: i64 = 1024;
 
 /// NATS JetStream implementation of [`orbflow_core::ports::Bus`].
 ///
@@ -32,6 +35,8 @@ pub struct NatsBus {
     jetstream: jetstream::Context,
     stream: Mutex<Option<jetstream::stream::Stream>>,
     subscription_handles: tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    consumer_ack_wait: Duration,
+    consumer_max_ack_pending: i64,
 }
 
 impl NatsBus {
@@ -49,6 +54,29 @@ impl NatsBus {
     /// When `require_tls` is `true`, the connection is rejected unless the URL
     /// uses `tls://`.
     pub async fn connect_with_options(url: &str, require_tls: bool) -> Result<Self, OrbflowError> {
+        Self::connect_with_consumer_options(
+            url,
+            require_tls,
+            Duration::from_secs(DEFAULT_CONSUMER_ACK_WAIT_SECS),
+            DEFAULT_MAX_ACK_PENDING,
+        )
+        .await
+    }
+
+    /// Connects to NATS with explicit consumer delivery safety settings.
+    pub async fn connect_with_consumer_options(
+        url: &str,
+        require_tls: bool,
+        consumer_ack_wait: Duration,
+        consumer_max_ack_pending: i64,
+    ) -> Result<Self, OrbflowError> {
+        let consumer_ack_wait = if consumer_ack_wait.is_zero() {
+            Duration::from_secs(DEFAULT_CONSUMER_ACK_WAIT_SECS)
+        } else {
+            consumer_ack_wait
+        };
+        let consumer_max_ack_pending = consumer_max_ack_pending.max(1);
+
         let parsed = parse_nats_url(url);
         let is_loopback = parsed.as_ref().is_some_and(|p| p.is_loopback());
         let is_tls = parsed.as_ref().is_some_and(|p| p.scheme == "tls");
@@ -92,6 +120,8 @@ impl NatsBus {
             jetstream,
             stream: Mutex::new(Some(stream)),
             subscription_handles: tokio::sync::Mutex::new(Vec::new()),
+            consumer_ack_wait,
+            consumer_max_ack_pending,
         })
     }
 }
@@ -165,7 +195,7 @@ impl Bus for NatsBus {
 
         // Durable name derived from subject (replace "." with "_") so multiple
         // workers share the same consumer (competing consumers pattern).
-        let durable = subject.replace('.', "_");
+        let durable = durable_name_for_subject(subject);
 
         let consumer: PullConsumer = stream
             .get_or_create_consumer(
@@ -174,6 +204,8 @@ impl Bus for NatsBus {
                     durable_name: Some(durable.clone()),
                     filter_subject: subject.to_owned(),
                     ack_policy: jetstream::consumer::AckPolicy::Explicit,
+                    ack_wait: self.consumer_ack_wait,
+                    max_ack_pending: self.consumer_max_ack_pending,
                     deliver_policy: jetstream::consumer::DeliverPolicy::All,
                     ..Default::default()
                 },
@@ -198,40 +230,41 @@ impl Bus for NatsBus {
                 let mut count = 0u32;
                 while let Some(Ok(msg)) = messages.next().await {
                     count += 1;
+                    let handler = handler.clone();
+                    let durable = durable.clone();
                     let subject = msg.subject.to_string();
                     let payload = msg.payload.to_vec();
 
-                    match handler(subject, payload).await {
-                        Ok(()) => {
-                            if let Err(e) = msg.ack().await {
-                                tracing::warn!("natsbus: ack failed: {e}");
-                            }
-                        }
-                        Err(e) => {
-                            // If the handler returns a "stream closed" error,
-                            // the consumer (e.g. SSE client) has disconnected.
-                            // Break out of the loop to avoid leaking this task.
-                            let err_str = e.to_string();
-                            if err_str.contains("stream closed") {
-                                tracing::info!(
-                                    "natsbus: consumer disconnected, stopping subscription loop for {durable}"
-                                );
-                                if let Err(ne) = msg.ack().await {
-                                    tracing::warn!("natsbus: ack on close failed: {ne}");
+                    tokio::spawn(async move {
+                        match handler(subject, payload).await {
+                            Ok(()) => {
+                                if let Err(e) = msg.ack().await {
+                                    tracing::warn!("natsbus: ack failed: {e}");
                                 }
-                                return;
                             }
-                            tracing::warn!("natsbus: handler error: {e}, nak with delay");
-                            if let Err(ne) = msg
-                                .ack_with(async_nats::jetstream::AckKind::Nak(Some(
-                                    Duration::from_secs(5),
-                                )))
-                                .await
-                            {
-                                tracing::warn!("natsbus: nak failed: {ne}");
+                            Err(e) => {
+                                let err_str = e.to_string();
+                                if err_str.contains("stream closed") {
+                                    tracing::info!(
+                                        "natsbus: consumer disconnected, acking message for {durable}"
+                                    );
+                                    if let Err(ne) = msg.ack().await {
+                                        tracing::warn!("natsbus: ack on close failed: {ne}");
+                                    }
+                                    return;
+                                }
+                                tracing::warn!("natsbus: handler error: {e}, nak with delay");
+                                if let Err(ne) = msg
+                                    .ack_with(async_nats::jetstream::AckKind::Nak(Some(
+                                        Duration::from_secs(5),
+                                    )))
+                                    .await
+                                {
+                                    tracing::warn!("natsbus: nak failed: {ne}");
+                                }
                             }
                         }
-                    }
+                    });
                 }
 
                 // Only back off when idle to avoid throughput ceiling.
@@ -266,6 +299,20 @@ impl Bus for NatsBus {
 
         Ok(())
     }
+}
+
+fn durable_name_for_subject(subject: &str) -> String {
+    let mut durable = String::with_capacity(subject.len());
+    for b in subject.bytes() {
+        match b {
+            b'.' => durable.push('_'),
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' => durable.push(b as char),
+            other => {
+                let _ = write!(&mut durable, "_x{other:02X}");
+            }
+        }
+    }
+    durable
 }
 
 fn is_stream_subject(subject: &str) -> bool {

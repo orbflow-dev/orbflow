@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::credential::CredentialId;
+use crate::error::OrbflowError;
 
 // ---------------------------------------------------------------------------
 // Access tier
@@ -36,6 +37,107 @@ pub enum CredentialAccessTier {
     ScopedToken,
     /// Plugin receives the raw credential value. Must be explicitly opted in.
     Raw,
+}
+
+impl CredentialAccessTier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Proxy => "proxy",
+            Self::ScopedToken => "scoped_token",
+            Self::Raw => "raw",
+        }
+    }
+
+    pub fn requires_explicit_policy(self) -> bool {
+        !matches!(self, Self::Proxy)
+    }
+
+    pub fn execution_mode(self) -> CredentialExecutionMode {
+        match self {
+            Self::Proxy => CredentialExecutionMode::Proxy,
+            Self::ScopedToken => CredentialExecutionMode::ScopedToken,
+            Self::Raw => CredentialExecutionMode::RawSecret,
+        }
+    }
+}
+
+/// Runtime execution path selected for a credential reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialExecutionMode {
+    /// Worker/runtime must execute through the credential proxy/capability path.
+    Proxy,
+    /// Worker/runtime must obtain a short-lived scoped token.
+    ScopedToken,
+    /// Worker/runtime may receive raw secret fields.
+    RawSecret,
+}
+
+/// Execution paths supported by the current runtime adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CredentialExecutionSupport {
+    pub proxy: bool,
+    pub scoped_token: bool,
+    pub raw_secret: bool,
+}
+
+impl CredentialExecutionSupport {
+    pub const FAIL_CLOSED: Self = Self {
+        proxy: false,
+        scoped_token: false,
+        raw_secret: false,
+    };
+
+    pub const RAW_SECRET_ONLY: Self = Self {
+        proxy: false,
+        scoped_token: false,
+        raw_secret: true,
+    };
+
+    pub fn supports(self, mode: CredentialExecutionMode) -> bool {
+        match mode {
+            CredentialExecutionMode::Proxy => self.proxy,
+            CredentialExecutionMode::ScopedToken => self.scoped_token,
+            CredentialExecutionMode::RawSecret => self.raw_secret,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialExecutionError {
+    TierNotAllowed {
+        tier: CredentialAccessTier,
+    },
+    UnsupportedExecutionMode {
+        tier: CredentialAccessTier,
+        mode: CredentialExecutionMode,
+    },
+}
+
+impl std::fmt::Display for CredentialExecutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TierNotAllowed { tier } => write!(
+                f,
+                "credential tier '{}' is not allowed by explicit credential policy",
+                tier.as_str()
+            ),
+            Self::UnsupportedExecutionMode { tier, mode } => write!(
+                f,
+                "credential tier '{}' requires unsupported execution mode {:?}",
+                tier.as_str(),
+                mode
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CredentialExecutionError {}
+
+impl From<CredentialExecutionError> for OrbflowError {
+    fn from(value: CredentialExecutionError) -> Self {
+        OrbflowError::InvalidNodeConfig(value.to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +227,11 @@ impl Default for CredentialPolicy {
 }
 
 impl CredentialPolicy {
+    /// Returns true when this policy explicitly permits `tier`.
+    pub fn allows_tier(&self, tier: CredentialAccessTier) -> bool {
+        self.allowed_tiers.contains(&tier)
+    }
+
     /// Checks if a URL is allowed by the domain allowlist.
     ///
     /// When the allowlist is empty every domain is permitted. Otherwise the
@@ -152,6 +259,31 @@ impl CredentialPolicy {
     }
 }
 
+/// Resolves the execution mode for a credential tier under explicit runtime support.
+///
+/// Non-Proxy tiers require an explicit policy entry. Unsupported runtime paths
+/// fail closed with a validation error instead of silently redacting or leaking
+/// secrets.
+pub fn resolve_credential_execution_mode(
+    tier: CredentialAccessTier,
+    policy: Option<&CredentialPolicy>,
+    support: CredentialExecutionSupport,
+) -> Result<CredentialExecutionMode, CredentialExecutionError> {
+    let policy_allows = policy
+        .map(|policy| policy.allows_tier(tier))
+        .unwrap_or(!tier.requires_explicit_policy());
+    if !policy_allows {
+        return Err(CredentialExecutionError::TierNotAllowed { tier });
+    }
+
+    let mode = tier.execution_mode();
+    if !support.supports(mode) {
+        return Err(CredentialExecutionError::UnsupportedExecutionMode { tier, mode });
+    }
+
+    Ok(mode)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -173,6 +305,56 @@ mod tests {
 
         let back: CredentialAccessTier = serde_json::from_str(&json).unwrap();
         assert_eq!(back, CredentialAccessTier::Raw);
+    }
+
+    #[test]
+    fn test_policy_allows_tier() {
+        let policy = CredentialPolicy {
+            allowed_tiers: vec![CredentialAccessTier::Proxy, CredentialAccessTier::Raw],
+            ..Default::default()
+        };
+        assert!(policy.allows_tier(CredentialAccessTier::Raw));
+        assert!(!policy.allows_tier(CredentialAccessTier::ScopedToken));
+    }
+
+    #[test]
+    fn test_raw_execution_requires_policy_and_support() {
+        assert!(matches!(
+            resolve_credential_execution_mode(
+                CredentialAccessTier::Raw,
+                None,
+                CredentialExecutionSupport::RAW_SECRET_ONLY
+            ),
+            Err(CredentialExecutionError::TierNotAllowed { .. })
+        ));
+
+        let policy = CredentialPolicy {
+            allowed_tiers: vec![CredentialAccessTier::Raw],
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_credential_execution_mode(
+                CredentialAccessTier::Raw,
+                Some(&policy),
+                CredentialExecutionSupport::RAW_SECRET_ONLY
+            )
+            .unwrap(),
+            CredentialExecutionMode::RawSecret
+        );
+    }
+
+    #[test]
+    fn test_unsupported_proxy_mode_fails_closed() {
+        let err = resolve_credential_execution_mode(
+            CredentialAccessTier::Proxy,
+            None,
+            CredentialExecutionSupport::FAIL_CLOSED,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            CredentialExecutionError::UnsupportedExecutionMode { .. }
+        ));
     }
 
     #[test]

@@ -4,6 +4,7 @@ import { useMemo, useCallback } from "react";
 import type { ConditionGroup, ConditionRule } from "../../types/schema";
 import { isConditionGroup } from "../../types/schema";
 import type { UpstreamOutput } from "../../utils/upstream";
+import { appendCelFieldAccess, buildNodeCelPath } from "../../utils/cel-builder";
 import { ConditionRow } from "./condition-row";
 import { NodeIcon } from "../icons";
 import { cn } from "../../utils/cn";
@@ -27,7 +28,7 @@ function buildFieldOptions(upstream: UpstreamOutput[]) {
     labelPrefix: string,
   ) {
     for (const f of fields) {
-      const celPath = `${celPrefix}.${f.key}`;
+      const celPath = appendCelFieldAccess(celPrefix, f.key);
       const label = labelPrefix ? `${nodeName} -> ${labelPrefix}.${f.key}` : `${nodeName} -> ${f.key}`;
       options.push({ label, celPath, type: f.type });
       if (f.children && f.children.length > 0) {
@@ -37,7 +38,7 @@ function buildFieldOptions(upstream: UpstreamOutput[]) {
   }
 
   for (const node of upstream) {
-    walk(node.fields, node.nodeId, node.nodeName, `nodes["${node.nodeId}"]`, "");
+    walk(node.fields, node.nodeId, node.nodeName, buildNodeCelPath(node.nodeId), "");
   }
 
   // Context

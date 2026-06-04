@@ -282,7 +282,7 @@ async fn start_workflow_rejects_non_object_input() {
 }
 
 #[tokio::test]
-async fn start_workflow_uses_owner_context_when_provided() {
+async fn start_workflow_rejects_request_body_owner_without_trusted_principal() {
     let engine = Arc::new(RecordingEngine::default());
     let (addr, handle) = start_server(Arc::clone(&engine)).await;
 
@@ -301,13 +301,10 @@ async fn start_workflow_uses_owner_context_when_provided() {
 
     handle.abort();
 
-    assert!(response["error"].is_null());
+    assert_eq!(response["error"]["code"], "UNAUTHENTICATED");
     assert_eq!(engine.start_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(engine.owner_start_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        engine.last_owner_id.lock().unwrap().as_deref(),
-        Some("owner-123")
-    );
+    assert_eq!(engine.owner_start_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(engine.last_owner_id.lock().unwrap().as_deref(), None);
 }
 
 #[tokio::test]

@@ -4,7 +4,7 @@
 //! Webhook trigger: Axum handler that matches incoming HTTP requests to workflows.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use axum::extract::DefaultBodyLimit;
 use axum::extract::{Path, Query, State};
@@ -22,6 +22,10 @@ use tracing::{info, warn};
 use crate::TriggerCallback;
 
 type HmacSha256 = Hmac<Sha256>;
+
+const FIRED_TRIGGER_NODE_ID_KEY: &str = "_fired_trigger_node_id";
+
+static WEBHOOK_TRIGGER_NODES: LazyLock<DashMap<String, String>> = LazyLock::new(DashMap::new);
 
 /// Maximum allowed webhook request body size (256 KB).
 const MAX_WEBHOOK_BODY_SIZE: usize = 256 * 1024;
@@ -86,6 +90,7 @@ impl WebhookHandler {
         secret: Option<String>,
     ) {
         let key = webhook_key(workflow_id, path);
+        WEBHOOK_TRIGGER_NODES.remove(&key);
         self.routes
             .insert(key.clone(), (workflow_id.clone(), secret));
         info!(
@@ -95,10 +100,34 @@ impl WebhookHandler {
         );
     }
 
+    /// Registers a webhook path for a trigger-kind node.
+    pub fn register_trigger_node_with_secret(
+        &self,
+        workflow_id: &WorkflowId,
+        path: &str,
+        trigger_node_id: &str,
+        secret: Option<String>,
+    ) {
+        let key = webhook_key(workflow_id, path);
+        WEBHOOK_TRIGGER_NODES.insert(key.clone(), trigger_node_id.to_owned());
+        self.routes
+            .insert(key.clone(), (workflow_id.clone(), secret));
+        info!(
+            workflow = %workflow_id,
+            node = %trigger_node_id,
+            path = %key,
+            "webhook trigger-node route registered"
+        );
+    }
+
     /// Removes all webhook routes for a workflow.
     pub fn remove(&self, workflow_id: &WorkflowId) {
         let wf_str = workflow_id.to_string();
         self.routes.retain(|_, (v, _)| v.to_string() != wf_str);
+        WEBHOOK_TRIGGER_NODES.retain(|key, _| {
+            !key.strip_prefix(&wf_str)
+                .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('/'))
+        });
     }
 
     /// Returns an Axum [`Router`] that handles incoming webhook requests.
@@ -243,6 +272,7 @@ async fn process_webhook(
             .into_response();
     }
 
+    let signed_route = secret.is_some();
     let Some(ref secret) = secret else {
         if state.auth_token.is_none() {
             warn!(key = %key, "webhook route has no server auth token or signature secret configured");
@@ -254,6 +284,20 @@ async fn process_webhook(
         }
         return verify_and_merge_payload(state, key, wf_id, query, raw_body).await;
     };
+
+    if signed_route && !query.is_empty() {
+        warn!(
+            key = %key,
+            "signed webhook request included unsigned query parameters"
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "signed webhook query parameters are not accepted"
+            })),
+        )
+            .into_response();
+    }
 
     // Verify HMAC-SHA256 signature against the raw request bytes (not re-serialized).
     {
@@ -360,6 +404,16 @@ async fn verify_and_merge_payload(
                 .into_response();
         }
         payload.insert(k, serde_json::Value::String(v));
+    }
+
+    if let Some(trigger_node_id) = WEBHOOK_TRIGGER_NODES
+        .get(key)
+        .map(|entry| entry.value().clone())
+    {
+        payload.insert(
+            FIRED_TRIGGER_NODE_ID_KEY.to_owned(),
+            serde_json::Value::String(trigger_node_id),
+        );
     }
 
     info!(

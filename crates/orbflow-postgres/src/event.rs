@@ -44,6 +44,7 @@ struct AuditEventRow {
     data: serde_json::Value,
     event_hash: Option<String>,
     prev_hash: Option<String>,
+    signature: Option<String>,
 }
 
 #[async_trait]
@@ -235,7 +236,7 @@ impl EventStore for PgStore {
         instance_id: &InstanceId,
     ) -> Result<Vec<audit::AuditRecord>, OrbflowError> {
         let rows: Vec<AuditEventRow> = sqlx::query_as(
-            r#"SELECT id, data, event_hash, prev_hash
+            r#"SELECT id, data, event_hash, prev_hash, signature
                FROM events WHERE instance_id = $1 ORDER BY id ASC"#,
         )
         .bind(instance_id.0.as_str())
@@ -247,21 +248,31 @@ impl EventStore for PgStore {
             ))
         })?;
 
-        rows.into_iter()
-            .enumerate()
-            .map(|(seq, row)| {
-                let event_data = serde_json::to_vec(&row.data).map_err(|e| {
-                    OrbflowError::Database(format!("postgres: serialize audit event data: {e}"))
-                })?;
-                Ok(audit::AuditRecord {
-                    prev_hash: row
-                        .prev_hash
-                        .unwrap_or_else(|| audit::GENESIS_HASH.to_string()),
-                    event_hash: row.event_hash.unwrap_or_default(),
-                    event_data,
-                    seq: seq as u64,
-                })
-            })
-            .collect()
+        let mut records = Vec::with_capacity(rows.len());
+        for (seq, row) in rows.into_iter().enumerate() {
+            let event_data = serde_json::to_vec(&row.data).map_err(|e| {
+                OrbflowError::Database(format!("postgres: serialize audit event data: {e}"))
+            })?;
+            let event_hash = row.event_hash.unwrap_or_default();
+            if let (Some(signature), Some(signer)) =
+                (row.signature.as_deref(), self.opts.audit_signer.as_ref())
+                && !signer.verify(event_hash.as_bytes(), signature)
+            {
+                return Err(OrbflowError::Database(format!(
+                    "postgres: invalid audit signature for event id {}",
+                    row.id
+                )));
+            }
+            records.push(audit::AuditRecord {
+                prev_hash: row
+                    .prev_hash
+                    .unwrap_or_else(|| audit::GENESIS_HASH.to_string()),
+                event_hash,
+                event_data,
+                seq: seq as u64,
+            });
+        }
+
+        Ok(records)
     }
 }

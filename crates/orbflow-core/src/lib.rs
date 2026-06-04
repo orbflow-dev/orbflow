@@ -46,7 +46,8 @@ pub use credential::{
 };
 pub use credential_proxy::{
     CapabilityRequest, CapabilityRequestType, CapabilityResponse, CredentialAccessTier,
-    CredentialPolicy,
+    CredentialExecutionError, CredentialExecutionMode, CredentialExecutionSupport,
+    CredentialPolicy, resolve_credential_execution_mode,
 };
 pub use error::OrbflowError;
 pub use event::DomainEvent;
@@ -72,16 +73,24 @@ pub use rbac::{Permission, PolicyBinding, PolicyScope, RbacPolicy, Role};
 pub use schema::{CREDENTIAL_SCHEMAS, CredentialSchemas};
 pub use streaming::{StreamChunk, StreamMessage, StreamSender, StreamingNodeExecutor};
 pub use subjects::{
-    SUBJECT_PREFIX, plugin_reload_subject, result_subject, stream_subject, task_subject,
+    SUBJECT_PREFIX, SubjectNameError, encode_pool_name, plugin_reload_subject, result_subject,
+    safe_result_subject, safe_task_subject, stream_subject, task_subject, try_result_subject,
+    try_task_subject, validate_pool_name,
 };
 pub use testing::{
     CoverageReport, MatcherType, TestAssertion, TestCase, TestCaseResult, TestSuite,
     TestSuiteResult, build_test_cached_outputs, evaluate_assertion,
 };
-pub use trigger::{Trigger, TriggerConfig, TriggerType};
+pub use trigger::{
+    CANONICAL_TRIGGER_TYPES, LEGACY_CRON_TRIGGER_TYPE, Trigger, TriggerConfig, TriggerType,
+    TriggerTypeParseError,
+};
 pub use validate::{validate_node_configs, validate_plugin_name, validate_workflow};
 pub use versioning::{ChangeRequest, ChangeRequestStatus, ReviewComment, WorkflowVersion};
-pub use wire::{ResultMessage, TaskMessage, WIRE_VERSION};
+pub use wire::{
+    ResultIdentityError, ResultIdentityMode, ResultMessage, TaskMessage, WIRE_VERSION,
+    dispatch_identity, verify_result_identity,
+};
 pub use workflow::{
     Annotation, CapabilityEdge, CapabilityPort, CompensateConfig, DefinitionStatus, Edge, Node,
     NodeKind, NodeMetadata, NodeType, ParameterMode, Position, RetryPolicy, Workflow, WorkflowId,

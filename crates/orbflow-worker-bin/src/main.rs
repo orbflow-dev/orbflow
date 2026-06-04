@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use orbflow_builtins::AiChatNode;
 use orbflow_builtins::register_builtins_with;
@@ -43,7 +44,16 @@ async fn main() {
     init_tracing_with_config(&cfg.log);
 
     // --- NATS ---
-    let bus = match NatsBus::connect(&cfg.nats.url).await {
+    let task_timeout = Duration::from_secs(cfg.worker.task_timeout_secs);
+    let nats_ack_wait = task_timeout.saturating_add(Duration::from_secs(30));
+    let bus = match NatsBus::connect_with_consumer_options(
+        &cfg.nats.url,
+        false,
+        nats_ack_wait,
+        cfg.worker.concurrency as i64,
+    )
+    .await
+    {
         Ok(b) => Arc::new(b),
         Err(e) => {
             tracing::error!("failed to connect to NATS: {e}");
@@ -52,7 +62,10 @@ async fn main() {
     };
 
     // --- Worker ---
-    let worker_opts = WorkerOptions::new().pool_name(&cfg.worker.pool);
+    let worker_opts = WorkerOptions::new()
+        .pool_name(&cfg.worker.pool)
+        .task_timeout(task_timeout)
+        .concurrency(cfg.worker.concurrency);
 
     let mut worker = Worker::new(bus.clone() as Arc<dyn Bus>, worker_opts);
 

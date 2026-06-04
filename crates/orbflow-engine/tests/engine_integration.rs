@@ -8,14 +8,19 @@
 //! synchronously, so tests run deterministically in a single async task.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
+use orbflow_core::event::DomainEvent;
 use orbflow_core::execution::NodeStatus;
 use orbflow_core::options::EngineOptionsBuilder;
-use orbflow_core::ports::{Bus, Engine, InstanceStore, MsgHandler, NodeExecutor, NodeOutput};
-use orbflow_core::wire::{ResultMessage, TaskMessage};
+use orbflow_core::ports::{
+    AtomicInstanceCreator, Bus, Engine, EventStore, InstanceStore, ListOptions, MsgHandler,
+    NodeExecutor, NodeOutput, Store, WorkflowStore,
+};
+use orbflow_core::versioning::WorkflowVersion;
+use orbflow_core::wire::{ResultMessage, TaskMessage, WIRE_VERSION, dispatch_identity};
 use orbflow_core::workflow::{Edge, Node, NodeKind, NodeType, Workflow, WorkflowId};
-use orbflow_core::{OrbflowError, task_subject};
+use orbflow_core::{Instance, InstanceId, InstanceStatus, OrbflowError, task_subject};
 use orbflow_engine::OrbflowEngine;
 use orbflow_testutil::{MockBus, MockNodeExecutor, MockStore};
 
@@ -220,6 +225,167 @@ impl Bus for PersistedBeforePublishBus {
     }
 }
 
+struct FailingStartEventStore {
+    workflows: Mutex<HashMap<WorkflowId, Workflow>>,
+    instances: Mutex<HashMap<InstanceId, Instance>>,
+}
+
+impl FailingStartEventStore {
+    fn new() -> Self {
+        Self {
+            workflows: Mutex::new(HashMap::new()),
+            instances: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn instance_count(&self) -> usize {
+        self.instances.lock().unwrap().len()
+    }
+}
+
+#[async_trait::async_trait]
+impl WorkflowStore for FailingStartEventStore {
+    async fn create_workflow(&self, wf: &Workflow) -> Result<(), OrbflowError> {
+        self.workflows
+            .lock()
+            .unwrap()
+            .insert(wf.id.clone(), wf.clone());
+        Ok(())
+    }
+
+    async fn get_workflow(&self, id: &WorkflowId) -> Result<Workflow, OrbflowError> {
+        self.workflows
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or(OrbflowError::NotFound)
+    }
+
+    async fn update_workflow(&self, wf: &Workflow) -> Result<(), OrbflowError> {
+        self.workflows
+            .lock()
+            .unwrap()
+            .insert(wf.id.clone(), wf.clone());
+        Ok(())
+    }
+
+    async fn delete_workflow(&self, id: &WorkflowId) -> Result<(), OrbflowError> {
+        self.workflows.lock().unwrap().remove(id);
+        Ok(())
+    }
+
+    async fn list_workflows(
+        &self,
+        _opts: ListOptions,
+    ) -> Result<(Vec<Workflow>, i64), OrbflowError> {
+        let workflows: Vec<Workflow> = self.workflows.lock().unwrap().values().cloned().collect();
+        let total = workflows.len() as i64;
+        Ok((workflows, total))
+    }
+
+    async fn save_workflow_version(&self, _version: &WorkflowVersion) -> Result<(), OrbflowError> {
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl InstanceStore for FailingStartEventStore {
+    async fn create_instance(&self, inst: &Instance) -> Result<(), OrbflowError> {
+        self.instances
+            .lock()
+            .unwrap()
+            .insert(inst.id.clone(), inst.clone());
+        Ok(())
+    }
+
+    async fn get_instance(&self, id: &InstanceId) -> Result<Instance, OrbflowError> {
+        self.instances
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or(OrbflowError::NotFound)
+    }
+
+    async fn update_instance(&self, inst: &Instance) -> Result<(), OrbflowError> {
+        self.instances
+            .lock()
+            .unwrap()
+            .insert(inst.id.clone(), inst.clone());
+        Ok(())
+    }
+
+    async fn list_instances(
+        &self,
+        _opts: ListOptions,
+    ) -> Result<(Vec<Instance>, i64), OrbflowError> {
+        let instances: Vec<Instance> = self.instances.lock().unwrap().values().cloned().collect();
+        let total = instances.len() as i64;
+        Ok((instances, total))
+    }
+
+    async fn list_running_instances(&self) -> Result<Vec<Instance>, OrbflowError> {
+        Ok(self
+            .instances
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|inst| inst.status == InstanceStatus::Running)
+            .cloned()
+            .collect())
+    }
+}
+
+#[async_trait::async_trait]
+impl EventStore for FailingStartEventStore {
+    async fn append_event(&self, event: DomainEvent) -> Result<(), OrbflowError> {
+        if matches!(event, DomainEvent::InstanceStarted(_)) {
+            return Err(OrbflowError::Database(
+                "injected InstanceStarted append failure".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn load_events(
+        &self,
+        _instance_id: &InstanceId,
+        _after_version: i64,
+    ) -> Result<Vec<DomainEvent>, OrbflowError> {
+        Ok(Vec::new())
+    }
+
+    async fn save_snapshot(&self, _inst: &Instance) -> Result<(), OrbflowError> {
+        Ok(())
+    }
+
+    async fn load_snapshot(
+        &self,
+        _instance_id: &InstanceId,
+    ) -> Result<Option<Instance>, OrbflowError> {
+        Ok(None)
+    }
+}
+
+#[async_trait::async_trait]
+impl AtomicInstanceCreator for FailingStartEventStore {
+    async fn create_instance_tx(
+        &self,
+        inst: &Instance,
+        event: DomainEvent,
+    ) -> Result<(), OrbflowError> {
+        self.append_event(event).await?;
+        self.instances
+            .lock()
+            .unwrap()
+            .insert(inst.id.clone(), inst.clone());
+        Ok(())
+    }
+}
+
+impl Store for FailingStartEventStore {}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -293,6 +459,109 @@ async fn dispatch_persists_queued_attempt_before_publish() {
         )
         .await
         .expect("start_workflow");
+}
+
+#[tokio::test]
+async fn start_workflow_first_event_failure_does_not_leave_orphan_instance() {
+    let store = Arc::new(FailingStartEventStore::new());
+    let bus = Arc::new(MockBus::new());
+
+    let trigger = make_node("trigger-1", "builtin:trigger-manual", NodeKind::Trigger);
+    let wf = make_workflow("wf-atomic-start", vec![trigger], vec![]);
+
+    let opts = EngineOptionsBuilder::new()
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .bus(bus as Arc<dyn Bus>)
+        .pool_name("test")
+        .enable_resume(false)
+        .build()
+        .expect("test engine options");
+    let engine = OrbflowEngine::new(opts);
+
+    engine.create_workflow(&wf).await.expect("create_workflow");
+    let err = engine
+        .start_workflow(&WorkflowId::new("wf-atomic-start"), HashMap::new())
+        .await
+        .expect_err("start must fail when the first InstanceStarted event cannot be persisted");
+
+    assert!(
+        matches!(
+            err,
+            OrbflowError::Database(_)
+                | OrbflowError::Internal(_)
+                | OrbflowError::InvalidNodeConfig(_)
+        ),
+        "expected visible persistence/transaction error, got {err:?}"
+    );
+    assert_eq!(
+        store.instance_count(),
+        0,
+        "failed first-event persistence must not leave a committed orphan instance"
+    );
+}
+
+#[tokio::test]
+async fn stale_worker_result_with_wrong_attempt_is_rejected_without_state_change() {
+    let store = Arc::new(MockStore::new());
+    let bus = Arc::new(MockBus::new());
+
+    let action = make_node("action-1", "builtin:action", NodeKind::Action);
+    let wf = make_workflow("wf-stale-result", vec![action], vec![]);
+
+    let opts = EngineOptionsBuilder::new()
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .bus(Arc::clone(&bus) as Arc<dyn Bus>)
+        .pool_name("test")
+        .enable_resume(false)
+        .build()
+        .expect("test engine options");
+    let engine = OrbflowEngine::new(opts);
+
+    engine.create_workflow(&wf).await.expect("create_workflow");
+    let instance = engine
+        .start_workflow(&WorkflowId::new("wf-stale-result"), HashMap::new())
+        .await
+        .expect("start_workflow");
+
+    let task_msgs = bus.messages_for(&task_subject("test"));
+    assert_eq!(task_msgs.len(), 1, "expected one queued task");
+    let task: TaskMessage = serde_json::from_slice(&task_msgs[0].data).unwrap();
+
+    let stale = ResultMessage {
+        result_id: Some("stale-result".into()),
+        instance_id: task.instance_id.clone(),
+        node_id: task.node_id.clone(),
+        attempt: task.attempt + 1,
+        dispatch_id: Some(dispatch_identity(
+            &task.instance_id,
+            &task.node_id,
+            task.attempt + 1,
+        )),
+        output: Some(HashMap::from([(
+            "result".into(),
+            serde_json::json!("stale"),
+        )])),
+        error: None,
+        trace_context: None,
+        v: WIRE_VERSION,
+    };
+
+    let err = engine
+        .handle_node_result(&stale)
+        .await
+        .expect_err("stale attempt result must be rejected");
+
+    assert!(
+        matches!(err, OrbflowError::Bus(_)),
+        "expected stale result to be rejected as a bus identity error, got {err:?}"
+    );
+    let stored = store.get_instance(&instance.id).await.unwrap();
+    let state = stored.node_states.get("action-1").unwrap();
+    assert_eq!(state.status, NodeStatus::Queued);
+    assert!(
+        !stored.context.node_outputs.contains_key("action-1"),
+        "stale worker output must not be applied to instance state"
+    );
 }
 
 /// Two-node linear workflow A → B, both succeed.

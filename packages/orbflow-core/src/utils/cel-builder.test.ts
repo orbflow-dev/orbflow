@@ -10,86 +10,98 @@ import type {
   ConditionGroup,
 } from "../types/schema";
 
+function fieldMapping(mapping: Omit<FieldMapping, "targetKey">): FieldMapping {
+  return { targetKey: "target", ...mapping };
+}
+
+function conditionRule(rule: Omit<ConditionRule, "id">): ConditionRule {
+  return { id: "rule", ...rule };
+}
+
+function conditionGroup(group: Omit<ConditionGroup, "id">): ConditionGroup {
+  return { id: "group", ...group };
+}
+
 describe("buildMappingExpression", () => {
   it("returns static string value as-is", () => {
-    const mapping: FieldMapping = {
+    const mapping = fieldMapping({
       mode: "static",
       staticValue: "hello",
-    };
+    });
     expect(buildMappingExpression(mapping)).toBe("hello");
   });
 
   it("returns JSON for non-string static values", () => {
-    const mapping: FieldMapping = {
+    const mapping = fieldMapping({
       mode: "static",
       staticValue: 42,
-    };
+    });
     expect(buildMappingExpression(mapping)).toBe("42");
   });
 
   it("returns empty string for undefined static value", () => {
-    const mapping: FieldMapping = {
+    const mapping = fieldMapping({
       mode: "static",
       staticValue: undefined,
-    };
+    });
     expect(buildMappingExpression(mapping)).toBe("");
   });
 
   it("builds CEL reference from sourceNodeId and sourcePath", () => {
-    const mapping: FieldMapping = {
+    const mapping = fieldMapping({
       mode: "expression",
       sourceNodeId: "http-1",
       sourcePath: "body.data",
-    };
+    });
     expect(buildMappingExpression(mapping)).toBe(
       '=nodes["http-1"].body.data',
     );
   });
 
   it("escapes node ids in generated CEL references", () => {
-    const mapping: FieldMapping = {
+    const mapping = fieldMapping({
       mode: "expression",
       sourceNodeId: 'http"node\\prod',
       sourcePath: "body.data",
-    };
+    });
     expect(buildMappingExpression(mapping)).toBe(
       '=nodes["http\\"node\\\\prod"].body.data',
     );
   });
 
   it("uses bracket access for source path segments that are not CEL identifiers", () => {
-    const mapping: FieldMapping = {
+    const mapping = fieldMapping({
       mode: "expression",
       sourceNodeId: "http-1",
       sourcePath: 'body.error-message."quoted key"',
-    };
+    });
     expect(buildMappingExpression(mapping)).toBe(
       '=nodes["http-1"].body["error-message"]["\\"quoted key\\""]',
     );
   });
 
   it("prepends = to celExpression if missing", () => {
-    const mapping: FieldMapping = {
+    const mapping = fieldMapping({
       mode: "expression",
       celExpression: 'nodes["http-1"].status',
-    };
+    });
     expect(buildMappingExpression(mapping)).toBe(
       '=nodes["http-1"].status',
     );
   });
 
   it("preserves = prefix in celExpression", () => {
-    const mapping: FieldMapping = {
+    const mapping = fieldMapping({
       mode: "expression",
       celExpression: '=nodes["http-1"].status',
-    };
+    });
     expect(buildMappingExpression(mapping)).toBe(
       '=nodes["http-1"].status',
     );
   });
 
   it("returns empty string for expression with no data", () => {
-    const mapping: FieldMapping = { mode: "expression" };
+    const mapping = fieldMapping({ mode: "expression" });
     expect(buildMappingExpression(mapping)).toBe("");
   });
 });
@@ -97,13 +109,13 @@ describe("buildMappingExpression", () => {
 describe("serializeMappings", () => {
   it("serializes multiple mappings, omitting empty values", () => {
     const mappings: Record<string, FieldMapping> = {
-      url: { mode: "static", staticValue: "https://api.example.com" },
-      body: {
+      url: fieldMapping({ mode: "static", staticValue: "https://api.example.com" }),
+      body: fieldMapping({
         mode: "expression",
         sourceNodeId: "transform-1",
         sourcePath: "result",
-      },
-      empty: { mode: "expression" },
+      }),
+      empty: fieldMapping({ mode: "expression" }),
     };
     expect(serializeMappings(mappings)).toEqual({
       url: "https://api.example.com",
@@ -118,111 +130,111 @@ describe("serializeMappings", () => {
 
 describe("buildConditionExpression", () => {
   it("builds a simple equality rule", () => {
-    const rule: ConditionRule = {
+    const rule = conditionRule({
       field: 'nodes["http-1"].status',
       operator: "==",
       value: 200,
-    };
+    });
     expect(buildConditionExpression(rule)).toBe(
       'nodes["http-1"].status == 200',
     );
   });
 
   it("quotes string values", () => {
-    const rule: ConditionRule = {
+    const rule = conditionRule({
       field: 'nodes["http-1"].method',
       operator: "==",
       value: "GET",
-    };
+    });
     expect(buildConditionExpression(rule)).toBe(
       'nodes["http-1"].method == "GET"',
     );
   });
 
   it("escapes string literals in comparison rules", () => {
-    const rule: ConditionRule = {
+    const rule = conditionRule({
       field: 'nodes["http-1"].body.message',
       operator: "==",
       value: 'line 1\nline 2 says "ok" in C:\\tmp',
-    };
+    });
     expect(buildConditionExpression(rule)).toBe(
       'nodes["http-1"].body.message == "line 1\\nline 2 says \\"ok\\" in C:\\\\tmp"',
     );
   });
 
   it("builds contains operator", () => {
-    const rule: ConditionRule = {
+    const rule = conditionRule({
       field: 'nodes["http-1"].body',
       operator: "contains",
       value: "error",
-    };
+    });
     expect(buildConditionExpression(rule)).toBe(
       'nodes["http-1"].body.contains("error")',
     );
   });
 
   it("escapes string literals in string operator calls", () => {
-    const rule: ConditionRule = {
+    const rule = conditionRule({
       field: 'nodes["http-1"].body',
       operator: "contains",
       value: 'bad "token"\\suffix',
-    };
+    });
     expect(buildConditionExpression(rule)).toBe(
       'nodes["http-1"].body.contains("bad \\"token\\"\\\\suffix")',
     );
   });
 
   it("joins AND group with &&", () => {
-    const group: ConditionGroup = {
+    const group = conditionGroup({
       logic: "and",
       rules: [
-        { field: "a", operator: "==", value: 1 },
-        { field: "b", operator: ">", value: 10 },
+        conditionRule({ field: "a", operator: "==", value: 1 }),
+        conditionRule({ field: "b", operator: ">", value: 10 }),
       ],
-    };
+    });
     expect(buildConditionExpression(group)).toBe("a == 1 && b > 10");
   });
 
   it("joins OR group with ||", () => {
-    const group: ConditionGroup = {
+    const group = conditionGroup({
       logic: "or",
       rules: [
-        { field: "x", operator: "==", value: "yes" },
-        { field: "y", operator: "!=", value: "no" },
+        conditionRule({ field: "x", operator: "==", value: "yes" }),
+        conditionRule({ field: "y", operator: "!=", value: "no" }),
       ],
-    };
+    });
     expect(buildConditionExpression(group)).toBe(
       'x == "yes" || y != "no"',
     );
   });
 
   it("returns true for empty group", () => {
-    const group: ConditionGroup = { logic: "and", rules: [] };
+    const group = conditionGroup({ logic: "and", rules: [] });
     expect(buildConditionExpression(group)).toBe("true");
   });
 
   it("unwraps single-rule group", () => {
-    const group: ConditionGroup = {
+    const group = conditionGroup({
       logic: "and",
-      rules: [{ field: "x", operator: ">=", value: 5 }],
-    };
+      rules: [conditionRule({ field: "x", operator: ">=", value: 5 })],
+    });
     expect(buildConditionExpression(group)).toBe("x >= 5");
   });
 
   it("wraps nested groups in parens", () => {
-    const group: ConditionGroup = {
+    const group = conditionGroup({
       logic: "and",
       rules: [
-        { field: "a", operator: "==", value: 1 },
-        {
+        conditionRule({ field: "a", operator: "==", value: 1 }),
+        conditionGroup({
           logic: "or",
           rules: [
-            { field: "b", operator: "==", value: 2 },
-            { field: "c", operator: "==", value: 3 },
+            conditionRule({ field: "b", operator: "==", value: 2 }),
+            conditionRule({ field: "c", operator: "==", value: 3 }),
           ],
-        },
+        }),
       ],
-    };
+    });
     expect(buildConditionExpression(group)).toBe(
       "a == 1 && (b == 2 || c == 3)",
     );

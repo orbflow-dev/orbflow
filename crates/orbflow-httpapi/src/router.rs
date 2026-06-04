@@ -21,8 +21,8 @@ use tower_http::trace::TraceLayer;
 
 use crate::handlers::{self, AppState};
 use crate::middleware::{
-    StartRateLimiter, auth_middleware, read_rate_limiter, sensitive_rate_limiter,
-    write_rate_limiter,
+    StartRateLimiter, auth_middleware, error_envelope_middleware, read_rate_limiter,
+    sensitive_rate_limiter, write_rate_limiter,
 };
 
 /// Maximum allowed size of a JSON request body (1 MB).
@@ -375,6 +375,7 @@ fn create_router_inner(
             auth_middleware(req, next, auth_token.clone(), trust_x_user_id)
         }))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_SIZE))
+        .layer(axum_middleware::from_fn(error_envelope_middleware))
         .layer(build_cors_layer(&opts.cors_origins))
         .layer(axum_middleware::from_fn(security_headers))
         .layer(TraceLayer::new_for_http())

@@ -138,10 +138,9 @@ impl NodeExecutor for TransformNode {
         let mut cel_ctx = HashMap::new();
         cel_ctx.insert("input".into(), data);
 
-        let result = self
-            .evaluator
-            .eval_any(&expr, &cel_ctx)
-            .map_err(|e| OrbflowError::Internal(format!("transform node: eval expression: {e}")))?;
+        let result = self.evaluator.eval_any(&expr, &cel_ctx).map_err(|e| {
+            OrbflowError::InvalidNodeConfig(format!("transform node: eval expression: {e}"))
+        })?;
 
         let type_name = value_type_name(&result);
 

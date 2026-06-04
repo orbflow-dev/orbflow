@@ -134,6 +134,7 @@ impl Default for GrpcConfig {
 pub struct WorkerConfig {
     pub pool: String,
     pub concurrency: usize,
+    pub task_timeout_secs: u64,
 }
 
 impl Default for WorkerConfig {
@@ -141,6 +142,7 @@ impl Default for WorkerConfig {
         Self {
             pool: "default".into(),
             concurrency: 4,
+            task_timeout_secs: 300,
         }
     }
 }
@@ -367,6 +369,25 @@ impl Config {
             ));
         }
 
+        if !is_nats_subject_token(&self.worker.pool) {
+            return Err(ConfigError::Validation(format!(
+                "worker.pool must be a single NATS subject token using ASCII letters, digits, '_' or '-' (got: {})",
+                self.worker.pool
+            )));
+        }
+
+        if self.worker.concurrency == 0 {
+            return Err(ConfigError::Validation(
+                "worker.concurrency must be non-zero".into(),
+            ));
+        }
+
+        if self.worker.task_timeout_secs == 0 {
+            return Err(ConfigError::Validation(
+                "worker.task_timeout_secs must be non-zero".into(),
+            ));
+        }
+
         match self.log.format.as_str() {
             "" | "json" | "console" => {}
             other => {
@@ -385,6 +406,13 @@ impl Config {
 
         Ok(())
     }
+}
+
+fn is_nats_subject_token(token: &str) -> bool {
+    !token.is_empty()
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// Errors from configuration loading.

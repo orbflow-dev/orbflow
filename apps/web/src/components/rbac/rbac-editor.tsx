@@ -101,13 +101,14 @@ function RoleCard({
   const [editPermissions, setEditPermissions] = useState<Permission[]>([...role.permissions]);
   const tier = getRoleTier(role);
   const tierColor = ROLE_TIER_COLORS[tier] ?? ROLE_TIER_COLORS.viewer;
+  const isBuiltin = role.builtin === true;
 
   const editInputClasses =
     "w-full rounded-lg bg-orbflow-surface border border-orbflow-border text-orbflow-text-secondary text-body-sm px-3 py-2 " +
     "placeholder:text-orbflow-text-ghost/50 focus:outline-none focus:ring-2 focus:ring-electric-indigo/50 focus:border-electric-indigo/40 transition-colors";
 
   function handleSaveInline() {
-    if (!onEdit || editName.trim().length < 3 || editPermissions.length === 0) return;
+    if (isBuiltin || !onEdit || editName.trim().length < 3 || editPermissions.length === 0) return;
     onEdit({
       ...role,
       name: editName.trim(),
@@ -269,8 +270,8 @@ function RoleCard({
               <p className="text-body-sm text-orbflow-text-faint mt-0.5 line-clamp-2">{role.description}</p>
             )}
           </div>
-          {/* Actions — always visible for custom roles */}
-          {(onEdit || onDelete) && (
+          {/* Actions — custom roles only; builtin roles are server-owned. */}
+          {!isBuiltin && (onEdit || onDelete) && (
             <div className="flex items-center gap-0.5 shrink-0">
               {onEdit && (
                 <button
@@ -650,7 +651,6 @@ export function RbacEditor() {
   const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [editedRoles, setEditedRoles] = useState<Role[]>([]);
   const [showRoleForm, setShowRoleForm] = useState(false);
-  const [editingRoleId, setEditingRoleId] = useState<string | null>(null);
   const [pendingDeleteRoleId, setPendingDeleteRoleId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -725,15 +725,25 @@ export function RbacEditor() {
   }, []);
 
   const handleUpdateRole = useCallback((updatedRole: Role) => {
-    setEditedRoles(prev => prev.map(r => r.id === updatedRole.id ? updatedRole : r));
-    setEditingRoleId(null);
-  }, []);
+    const current = editedRoles.find((r) => r.id === updatedRole.id);
+    if (current?.builtin) {
+      setSaveError(`System role "${current.name}" cannot be edited`);
+      return;
+    }
+    setEditedRoles(prev => prev.map(r => r.id === updatedRole.id ? { ...updatedRole, builtin: false } : r));
+  }, [editedRoles]);
 
   const handleDeleteRole = useCallback((roleId: string) => {
+    const current = editedRoles.find((r) => r.id === roleId);
+    if (current?.builtin) {
+      setSaveError(`System role "${current.name}" cannot be deleted`);
+      setPendingDeleteRoleId(null);
+      return;
+    }
     setEditedRoles(prev => prev.filter(r => r.id !== roleId));
     setEditedBindings(prev => prev.filter(b => b.role_id !== roleId));
     setPendingDeleteRoleId(null);
-  }, []);
+  }, [editedRoles]);
 
   const handleDiscard = useCallback(() => {
     if (!policy) return;
@@ -741,7 +751,6 @@ export function RbacEditor() {
     setEditedRoles(policy.roles);
     setShowAddForm(false);
     setShowRoleForm(false);
-    setEditingRoleId(null);
     setPendingDeleteRoleId(null);
     setSaveError(null);
     setSaveSuccess(false);
@@ -994,8 +1003,8 @@ export function RbacEditor() {
               key={role.id}
               role={role}
               bindingCount={bindingCountByRole[role.id] ?? 0}
-              onEdit={handleUpdateRole}
-              onDelete={() => setPendingDeleteRoleId(role.id)}
+              onEdit={role.builtin ? undefined : handleUpdateRole}
+              onDelete={role.builtin ? undefined : () => setPendingDeleteRoleId(role.id)}
             />
           ))}
         </div>

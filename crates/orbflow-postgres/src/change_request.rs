@@ -420,6 +420,8 @@ impl PgStore {
         _expected_version: i32,
         new_definition: &serde_json::Value,
     ) -> Result<(), OrbflowError> {
+        orbflow_core::versioning::reject_reactflow_change_definition(new_definition)?;
+
         let mut tx = self.pool.begin().await.map_err(|e| {
             OrbflowError::Database(format!("postgres: begin merge transaction: {e}"))
         })?;

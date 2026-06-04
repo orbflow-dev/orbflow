@@ -14,7 +14,7 @@ use orbflow_core::{
     Bus, NodeExecutor, NodeInput, NodeOutput, OrbflowError, ResultMessage, TaskMessage,
     WIRE_VERSION, result_subject, stream_subject, task_subject,
 };
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore};
 use tracing::{Instrument, debug, error, info};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -26,6 +26,8 @@ pub struct WorkerOptions {
     pub pool_name: String,
     /// Maximum execution time per task (default: 5 minutes).
     pub task_timeout: Duration,
+    /// Maximum number of node executions allowed concurrently.
+    pub concurrency: usize,
 }
 
 impl Default for WorkerOptions {
@@ -33,6 +35,7 @@ impl Default for WorkerOptions {
         Self {
             pool_name: "default".into(),
             task_timeout: Duration::from_secs(300),
+            concurrency: 4,
         }
     }
 }
@@ -54,6 +57,12 @@ impl WorkerOptions {
         self.task_timeout = timeout;
         self
     }
+
+    /// Sets the maximum number of concurrent task executions.
+    pub fn concurrency(mut self, concurrency: usize) -> Self {
+        self.concurrency = concurrency.max(1);
+        self
+    }
 }
 
 /// Worker subscribes to the task bus and executes nodes.
@@ -68,6 +77,7 @@ pub struct Worker {
     bus: Arc<dyn Bus>,
     pool: String,
     task_timeout: Duration,
+    concurrency: usize,
     stop_notify: Arc<Notify>,
 }
 
@@ -80,6 +90,7 @@ impl Worker {
             bus,
             pool: options.pool_name,
             task_timeout: options.task_timeout,
+            concurrency: options.concurrency.max(1),
             stop_notify: Arc::new(Notify::new()),
         }
     }
@@ -134,6 +145,7 @@ impl Worker {
         let result_subj = result_subject(&self.pool);
         let bus = Arc::clone(&self.bus);
         let task_timeout = self.task_timeout;
+        let execution_permits = Arc::new(Semaphore::new(self.concurrency.max(1)));
         let stop_notify = Arc::clone(&self.stop_notify);
 
         // Share the live executor registries so runtime-registered plugins
@@ -147,8 +159,12 @@ impl Worker {
             let streaming_executors = Arc::clone(&streaming_executors);
             let bus = Arc::clone(&bus_for_handler);
             let result_subj = result_subj.clone();
+            let execution_permits = Arc::clone(&execution_permits);
 
             Box::pin(async move {
+                let _permit = execution_permits.acquire_owned().await.map_err(|_| {
+                    OrbflowError::Internal("worker concurrency limiter closed".into())
+                })?;
                 handle_task(
                     &executors,
                     &streaming_executors,
@@ -163,7 +179,7 @@ impl Worker {
 
         bus.subscribe(&subject, handler).await?;
 
-        info!(pool = %self.pool, "worker started");
+        info!(pool = %self.pool, concurrency = self.concurrency, "worker started");
 
         // Wait for stop signal.
         stop_notify.notified().await;
@@ -260,6 +276,9 @@ async fn handle_task(
         None
     };
 
+    let redacted_secret_key = redacted_credential_secret_key(task.config.as_ref())
+        .or_else(|| redacted_credential_secret_key(task.parameters.as_ref()));
+
     // Destructure task to move fields into NodeInput instead of cloning.
     // trace_context was already extracted above; v is Copy.
     let TaskMessage {
@@ -288,6 +307,21 @@ async fn handle_task(
         capabilities,
         attempt,
     };
+
+    if let Some(secret_key) = redacted_secret_key {
+        let wall_time_ms = exec_start.elapsed().as_millis() as u64;
+        let result = build_result_message(
+            &input,
+            dispatch_id,
+            Err(OrbflowError::InvalidNodeConfig(format!(
+                "credential secret '{secret_key}' was redacted before worker execution; configure a proxy-capable node or explicitly allow raw credential access"
+            ))),
+            wall_time_ms,
+        );
+        let result_data = serde_json::to_vec(&result)
+            .map_err(|e| OrbflowError::Internal(format!("marshal result: {e}")))?;
+        return bus.publish(result_subject, &result_data).await;
+    }
 
     // Check if this executor supports streaming.
     // The streaming handler creates its own span, so we don't enter ours here.
@@ -336,6 +370,27 @@ async fn handle_task(
         .map_err(|e| OrbflowError::Internal(format!("marshal result: {e}")))?;
 
     bus.publish(result_subject, &result_data).await
+}
+
+const REDACTED_CREDENTIAL_SECRET_KEYS: &[&str] = &[
+    "api_key",
+    "token",
+    "access_token",
+    "refresh_token",
+    "client_secret",
+    "password",
+    "secret",
+    "private_key",
+];
+
+fn redacted_credential_secret_key(
+    map: Option<&HashMap<String, serde_json::Value>>,
+) -> Option<String> {
+    let map = map?;
+    REDACTED_CREDENTIAL_SECRET_KEYS
+        .iter()
+        .find(|key| map.get(**key).is_some_and(serde_json::Value::is_null))
+        .map(|key| (*key).to_owned())
 }
 
 /// Handles a streaming task: relays chunks to bus, then publishes final result.

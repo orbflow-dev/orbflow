@@ -34,6 +34,23 @@ const BINARY_CONTENT_PREFIXES: &[&str] = &[
 
 /// Maximum response body size: 1 MiB.
 const MAX_BODY_SIZE: usize = 1 << 20;
+const MAX_REDIRECTS: usize = 10;
+
+fn ssrf_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() > MAX_REDIRECTS {
+            return attempt.error("http node: too many redirects");
+        }
+
+        let redirect_url = attempt.url().as_str();
+        match crate::ssrf::validate_url_not_private(redirect_url, false) {
+            Ok(()) => attempt.follow(),
+            Err(e) => attempt.error(format!(
+                "http node: redirect target rejected by SSRF policy: {e}"
+            )),
+        }
+    })
+}
 
 /// Returns a shared reqwest client with sensible defaults.
 fn default_client() -> Result<&'static reqwest::Client, OrbflowError> {
@@ -50,6 +67,7 @@ fn default_client() -> Result<&'static reqwest::Client, OrbflowError> {
         .pool_max_idle_per_host(10)
         .pool_idle_timeout(std::time::Duration::from_secs(90))
         .min_tls_version(reqwest::tls::Version::TLS_1_2)
+        .redirect(ssrf_redirect_policy())
         .user_agent("Orbflow/1.0")
         .build()
         .map_err(|e| {

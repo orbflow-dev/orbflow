@@ -24,7 +24,7 @@ interface AlertStore {
 
   fetchAlerts: () => Promise<void>;
   createAlert: (input: CreateAlertInput) => Promise<AlertRule>;
-  updateAlert: (id: string, input: Partial<CreateAlertInput>) => Promise<AlertRule>;
+  updateAlert: (id: string, input: CreateAlertInput) => Promise<AlertRule>;
   deleteAlert: (id: string) => Promise<void>;
   toggleAlert: (id: string) => Promise<void>;
 }
@@ -101,6 +101,11 @@ export const useAlertStore = create<AlertStore>((set, get) => ({
     if (!alert) return;
     try {
       const updated = await client.alerts.update(id, {
+        ...(alert.workflow_id ? { workflow_id: alert.workflow_id } : {}),
+        metric: alert.metric,
+        operator: alert.operator,
+        threshold: alert.threshold,
+        channel: alert.channel,
         enabled: !alert.enabled,
       });
       set((s) => ({

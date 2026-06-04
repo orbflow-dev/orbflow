@@ -33,12 +33,28 @@ use orbflow_core::{OrbflowError, result_subject, task_subject, validate_workflow
 
 /// Key used to reference a credential in node config/parameters maps.
 const CREDENTIAL_ID_KEY: &str = "credential_id";
+/// Optional trigger input key supplied by trigger runtime adapters when a
+/// specific trigger-kind node fired.
+const FIRED_TRIGGER_NODE_ID_KEY: &str = "_fired_trigger_node_id";
+/// Legacy trigger input key accepted during rolling upgrades.
+const LEGACY_FIRED_TRIGGER_NODE_ID_KEY: &str = "_trigger_node_id";
+/// Trigger type key currently supplied by trigger runtime adapters.
+const FIRED_TRIGGER_TYPE_KEY: &str = "_trigger_type";
 
 use crate::dag::find_ready_nodes;
 use crate::sla::{SlaCheckResult, SlaMonitor};
 
 /// Maximum number of retry attempts when a version conflict occurs during save.
 const SAVE_INSTANCE_MAX_RETRIES: usize = 3;
+
+enum PostLockAction {
+    None,
+    DispatchRetry {
+        instance_id: InstanceId,
+        node_id: String,
+        delay: Duration,
+    },
+}
 
 /// Maps a Z-score magnitude to a severity string for anomaly events.
 fn severity_from_z(z: f64) -> &'static str {
@@ -735,34 +751,37 @@ impl OrbflowEngine {
             };
             match fetch_result {
                 Ok(cred) => {
-                    // Enforce allowed_tiers policy: only allow non-Proxy tiers
-                    // when the credential has an explicit policy that permits it.
-                    // Raw credentials without a policy fall back to Proxy to
-                    // prevent plaintext secrets on NATS.
+                    let truncated = Self::truncated_credential_id(&cred_id);
+
+                    // Enforce fail-closed credential execution. Raw transport is
+                    // allowed only when an explicit credential policy permits it;
+                    // proxy/scoped-token paths remain blocked until the worker
+                    // has an executable proxy contract for secret material.
                     let effective_tier = match &cred.policy {
                         None if cred.access_tier != CredentialAccessTier::Proxy => {
-                            tracing::warn!(
-                                credential = %cred_id,
-                                tier = ?cred.access_tier,
-                                "non-Proxy tier with no policy, falling back to Proxy"
-                            );
-                            CredentialAccessTier::default()
+                            return Err(OrbflowError::InvalidNodeConfig(format!(
+                                "credential '{truncated}' requests {:?} access without an explicit policy",
+                                cred.access_tier
+                            )));
                         }
                         Some(policy) if !policy.allowed_tiers.contains(&cred.access_tier) => {
-                            tracing::warn!(
-                                credential = %cred_id,
-                                tier = ?cred.access_tier,
-                                allowed = ?policy.allowed_tiers,
-                                "access tier not in allowed_tiers, falling back to Proxy"
-                            );
-                            CredentialAccessTier::default()
+                            return Err(OrbflowError::InvalidNodeConfig(format!(
+                                "credential '{truncated}' requests {:?} access but policy allows {:?}",
+                                cred.access_tier, policy.allowed_tiers
+                            )));
                         }
                         _ => cred.access_tier,
                     };
+                    Self::validate_credential_execution_tier(
+                        &cred_id,
+                        &cred.credential_type,
+                        effective_tier,
+                        &cred.data,
+                    )?;
                     result.insert(cred_id, (cred.credential_type, effective_tier, cred.data));
                 }
                 Err(e) => {
-                    let truncated = &cred_id[..8.min(cred_id.len())];
+                    let truncated = Self::truncated_credential_id(&cred_id);
                     if e.is_not_found() {
                         return Err(OrbflowError::InvalidNodeConfig(format!(
                             "credential '{truncated}' not found"
@@ -817,6 +836,15 @@ impl OrbflowEngine {
                     inst.owner_id.as_deref(),
                 )
                 .await?;
+            let mut resolved_config = cn.config.clone();
+            if let Some(config) = resolved_config.as_mut()
+                && let Some(serde_json::Value::String(cred_id)) = config.remove(CREDENTIAL_ID_KEY)
+                && let Some((_cred_type, _tier, cred_data)) = cap_creds.get(&cred_id)
+            {
+                for (k, v) in cred_data {
+                    config.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+            }
             if let Some(params) = resolved_params.as_mut()
                 && let Some(serde_json::Value::String(cred_id)) = params.remove(CREDENTIAL_ID_KEY)
                 && let Some((_cred_type, _tier, cred_data)) = cap_creds.get(&cred_id)
@@ -830,7 +858,7 @@ impl OrbflowEngine {
                 instance_id: inst.id.clone(),
                 node_id: cn.id.clone(),
                 plugin_ref: cn.plugin_ref.clone(),
-                config: cn.config.clone(),
+                config: resolved_config,
                 input: Some(
                     self.resolve_input_mapping(cn.input_mapping.as_ref(), &inst.context)
                         .await?,
@@ -879,18 +907,71 @@ impl OrbflowEngine {
         Ok(())
     }
 
-    /// Marks all trigger-kind nodes as completed, recording the workflow input
-    /// as their output so downstream nodes can reference it. Returns `true` when
-    /// at least one trigger node was found.
+    fn trigger_nodes_to_complete<'a>(
+        &self,
+        wf: &'a Workflow,
+        input: &HashMap<String, serde_json::Value>,
+    ) -> Result<Vec<&'a Node>, OrbflowError> {
+        let trigger_nodes = wf.trigger_nodes();
+        if trigger_nodes.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        if let Some(serde_json::Value::String(node_id)) = input
+            .get(FIRED_TRIGGER_NODE_ID_KEY)
+            .or_else(|| input.get(LEGACY_FIRED_TRIGGER_NODE_ID_KEY))
+            && !node_id.trim().is_empty()
+        {
+            let matching: Vec<&Node> = trigger_nodes
+                .into_iter()
+                .filter(|node| node.id == *node_id)
+                .collect();
+            if matching.is_empty() {
+                return Err(OrbflowError::InvalidNodeConfig(format!(
+                    "fired trigger node '{node_id}' is not a trigger in workflow {}",
+                    wf.id
+                )));
+            }
+            return Ok(matching);
+        }
+
+        if let Some(serde_json::Value::String(trigger_type)) = input.get(FIRED_TRIGGER_TYPE_KEY)
+            && !trigger_type.trim().is_empty()
+        {
+            let normalized = if trigger_type == "cron" {
+                "schedule"
+            } else {
+                trigger_type.as_str()
+            };
+            let matching: Vec<&Node> = trigger_nodes
+                .iter()
+                .copied()
+                .filter(|node| {
+                    node.trigger_config
+                        .as_ref()
+                        .is_some_and(|cfg| cfg.trigger_type.to_string() == normalized)
+                })
+                .collect();
+            if !matching.is_empty() {
+                return Ok(matching);
+            }
+        }
+
+        Ok(trigger_nodes)
+    }
+
+    /// Marks the fired trigger-kind node as completed, recording workflow input
+    /// as its output so downstream nodes can reference it. Older callers without
+    /// trigger provenance retain the legacy behavior of completing all triggers.
     fn mark_triggers_completed(
         &self,
         inst: &mut Instance,
         wf: &Workflow,
         input: &HashMap<String, serde_json::Value>,
-    ) -> bool {
-        let trigger_nodes = wf.trigger_nodes();
+    ) -> Result<bool, OrbflowError> {
+        let trigger_nodes = self.trigger_nodes_to_complete(wf, input)?;
         if trigger_nodes.is_empty() {
-            return false;
+            return Ok(false);
         }
         let now = Utc::now();
         for tn in &trigger_nodes {
@@ -904,7 +985,7 @@ impl OrbflowEngine {
                 .node_outputs
                 .insert(tn.id.clone(), input.clone());
         }
-        true
+        Ok(true)
     }
 
     /// Dispatches the initial set of ready nodes after workflow start.
@@ -928,8 +1009,7 @@ impl OrbflowEngine {
         for n in &entry_nodes {
             if let Err(e) = self.dispatch_node(inst, wf, n).await {
                 error!(node = n.id.as_str(), error = %e, "failed to dispatch entry node");
-                self.mark_node_dispatch_failed(inst, &n.id, &e).await?;
-                self.cascade_terminal_skips(wf, inst).await;
+                self.handle_node_dispatch_error(inst, wf, &n.id, &e).await?;
                 return Ok(());
             }
         }
@@ -949,11 +1029,27 @@ impl OrbflowEngine {
                         error = %e,
                         "failed to dispatch post-trigger node"
                     );
-                    self.mark_node_dispatch_failed(inst, node_id, &e).await?;
-                    self.cascade_terminal_skips(wf, inst).await;
+                    self.handle_node_dispatch_error(inst, wf, node_id, &e)
+                        .await?;
                     return Ok(());
                 }
             }
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn handle_node_dispatch_error(
+        &self,
+        inst: &mut Instance,
+        wf: &Workflow,
+        node_id: &str,
+        error: &OrbflowError,
+    ) -> Result<(), OrbflowError> {
+        self.mark_node_dispatch_failed(inst, node_id, error).await?;
+        if self.has_compensation(wf, inst) {
+            crate::saga::start_compensation(self, inst, wf, node_id).await?;
+        } else {
+            self.cascade_terminal_skips(wf, inst).await;
         }
         Ok(())
     }
@@ -1040,6 +1136,113 @@ impl OrbflowEngine {
         Duration::from_millis(delay_ms)
     }
 
+    fn merge_instance_status(fresh: InstanceStatus, local: InstanceStatus) -> InstanceStatus {
+        use InstanceStatus::*;
+        match (fresh, local) {
+            (Failed, _) | (_, Failed) => Failed,
+            (Cancelled, _) | (_, Cancelled) => Cancelled,
+            (Completed, _) | (_, Completed) => Completed,
+            (Running, _) | (_, Running) => Running,
+            _ => Pending,
+        }
+    }
+
+    fn credential_has_secret_material(
+        cred_type: &str,
+        cred_data: &HashMap<String, serde_json::Value>,
+    ) -> bool {
+        if cred_data.is_empty() {
+            return false;
+        }
+        let secrets = orbflow_core::CredentialSchemas::secret_keys(cred_type);
+        secrets.is_empty() || cred_data.keys().any(|key| secrets.contains(key.as_str()))
+    }
+
+    fn truncated_credential_id(cred_id: &str) -> &str {
+        &cred_id[..8.min(cred_id.len())]
+    }
+
+    fn validate_credential_execution_tier(
+        cred_id: &str,
+        cred_type: &str,
+        tier: CredentialAccessTier,
+        cred_data: &HashMap<String, serde_json::Value>,
+    ) -> Result<(), OrbflowError> {
+        let truncated = Self::truncated_credential_id(cred_id);
+        match tier {
+            CredentialAccessTier::Raw => Ok(()),
+            CredentialAccessTier::ScopedToken => Err(OrbflowError::InvalidNodeConfig(format!(
+                "credential '{truncated}' uses scoped_token access, but scoped credential execution is not implemented"
+            ))),
+            CredentialAccessTier::Proxy
+                if Self::credential_has_secret_material(cred_type, cred_data) =>
+            {
+                Err(OrbflowError::InvalidNodeConfig(format!(
+                    "credential '{truncated}' uses proxy access, but proxy credential execution is not implemented for secret material; configure an explicit raw credential policy or use a proxy-capable node"
+                )))
+            }
+            CredentialAccessTier::Proxy => Ok(()),
+        }
+    }
+
+    async fn dispatch_retry_after_lock(
+        &self,
+        instance_id: &InstanceId,
+        node_id: &str,
+        delay: Duration,
+    ) -> Result<(), OrbflowError> {
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
+
+        let mu = self.lock_instance(instance_id);
+        let _guard = mu.lock().await;
+
+        let mut inst = self.store.get_instance(instance_id).await?;
+        if inst.is_terminal() {
+            self.cleanup_instance(&inst);
+            return Ok(());
+        }
+
+        let wf = self.store.get_workflow(&inst.workflow_id).await?;
+        let node = wf
+            .node_by_id(node_id)
+            .cloned()
+            .ok_or(OrbflowError::NotFound)?;
+
+        let should_dispatch = inst
+            .node_states
+            .get(node_id)
+            .is_some_and(|ns| ns.status == NodeStatus::Queued && ns.started_at.is_none());
+        if !should_dispatch {
+            return Ok(());
+        }
+
+        if let Err(e) = self.dispatch_node(&mut inst, &wf, &node).await {
+            error!(
+                node = node_id,
+                error = %e,
+                "failed to dispatch retry"
+            );
+            self.handle_node_dispatch_error(&mut inst, &wf, node_id, &e)
+                .await?;
+            self.save_instance(&mut inst).await?;
+            self.cleanup_instance(&inst);
+        }
+
+        Ok(())
+    }
+
+    fn is_expected_compensation_result(inst: &Instance, result: &ResultMessage) -> bool {
+        let Some(orig_node_id) = result.node_id.strip_prefix("_compensate_") else {
+            return false;
+        };
+        let Some(saga) = inst.saga.as_ref() else {
+            return false;
+        };
+        saga.compensating && saga.completed_nodes.iter().any(|node| node == orig_node_id)
+    }
+
     fn validate_dispatch_identity(
         &self,
         result: &ResultMessage,
@@ -1050,8 +1253,10 @@ impl OrbflowEngine {
         // legacy shape; strict dispatch_id validation still applies whenever a
         // worker sends the field.
         if result.dispatch_id.is_none()
-            && result.v <= 1
-            && (result.attempt == 0 || result.attempt == expected_attempt)
+            && result.v == 1
+            && result.result_id.is_none()
+            && expected_attempt == 1
+            && (result.attempt == 0 || result.attempt == 1)
         {
             return Ok(());
         }
@@ -1247,11 +1452,12 @@ impl OrbflowEngine {
                         .collect();
 
                     // Replace inst with fresh, then apply local updates.
+                    let merged_status = Self::merge_instance_status(fresh.status, local_status);
                     *inst = fresh;
                     for (node_id, ns) in updates {
                         inst.node_states.insert(node_id, ns);
                     }
-                    inst.status = local_status;
+                    inst.status = merged_status;
                     inst.updated_at = local_updated;
                     for (k, v) in local_outputs {
                         inst.context.node_outputs.entry(k).or_insert(v);
@@ -1296,7 +1502,7 @@ impl OrbflowEngine {
         // check to prevent TOCTOU race where two concurrent results with the
         // same result_id both pass the `contains` check before either records.
         let mu = self.lock_instance(&result.instance_id);
-        let _guard = mu.lock().await;
+        let guard = mu.lock().await;
 
         // Idempotency check (inside per-instance lock). Record the result ID
         // only after durable state handling succeeds so a failed save can be
@@ -1324,16 +1530,33 @@ impl OrbflowEngine {
             None
         };
 
-        self.handle_node_result_durable(result).await?;
+        let post_lock_action = self.handle_node_result_durable(result).await?;
 
         if let Some((rs, result_id)) = dedupe_record {
             rs.add(result_id);
         }
 
+        drop(guard);
+
+        match post_lock_action {
+            PostLockAction::None => {}
+            PostLockAction::DispatchRetry {
+                instance_id,
+                node_id,
+                delay,
+            } => {
+                self.dispatch_retry_after_lock(&instance_id, &node_id, delay)
+                    .await?;
+            }
+        }
+
         Ok(())
     }
 
-    async fn handle_node_result_durable(&self, result: &ResultMessage) -> Result<(), OrbflowError> {
+    async fn handle_node_result_durable(
+        &self,
+        result: &ResultMessage,
+    ) -> Result<PostLockAction, OrbflowError> {
         let span = tracing::info_span!(
             SPAN_NODE_EXECUTE,
             instance_id = %result.instance_id,
@@ -1346,8 +1569,10 @@ impl OrbflowEngine {
 
         let mut inst = self.store.get_instance(&result.instance_id).await?;
 
-        // Route compensation results to the saga handler.
-        if result.node_id.starts_with("_compensate_") {
+        // Route only active saga compensation results to the saga handler.
+        // User-authored nodes may legally share the reserved prefix during
+        // rolling migrations; they still go through normal node validation.
+        if Self::is_expected_compensation_result(&inst, result) {
             if let Err(e) = self.validate_compensation_result_identity(&inst, result) {
                 warn!(
                     instance = %result.instance_id,
@@ -1355,16 +1580,16 @@ impl OrbflowEngine {
                     error = %e,
                     "compensation result rejected"
                 );
-                return Ok(());
+                return Ok(PostLockAction::None);
             }
             crate::saga::handle_compensation_result(self, &mut inst, result).await?;
             self.cleanup_instance(&inst);
-            return Ok(());
+            return Ok(PostLockAction::None);
         }
 
         if inst.is_terminal() {
             self.cleanup_instance(&inst);
-            return Ok(());
+            return Ok(PostLockAction::None);
         }
 
         if let Err(e) = self.validate_node_result_identity(&inst, result) {
@@ -1374,7 +1599,7 @@ impl OrbflowEngine {
                 error = %e,
                 "node result rejected"
             );
-            return Ok(());
+            return Err(e);
         }
 
         let wf = self.store.get_workflow(&inst.workflow_id).await?;
@@ -1421,25 +1646,16 @@ impl OrbflowEngine {
                 })?;
                 ns.attempt += 1;
                 ns.status = NodeStatus::Queued;
+                ns.started_at = None;
+                ns.ended_at = None;
+                ns.error = None;
                 inst.updated_at = now;
                 self.save_instance(&mut inst).await?;
-                let node = node.clone();
-                if !retry_delay.is_zero() {
-                    tokio::time::sleep(retry_delay).await;
-                }
-                if let Err(e) = self.dispatch_node(&mut inst, &wf, &node).await {
-                    error!(
-                        node = result.node_id.as_str(),
-                        error = %e,
-                        "failed to dispatch retry"
-                    );
-                    self.mark_node_dispatch_failed(&mut inst, &result.node_id, &e)
-                        .await?;
-                    self.cascade_terminal_skips(&wf, &mut inst).await;
-                    self.save_instance(&mut inst).await?;
-                    self.cleanup_instance(&inst);
-                }
-                return Ok(());
+                return Ok(PostLockAction::DispatchRetry {
+                    instance_id: inst.id.clone(),
+                    node_id: result.node_id.clone(),
+                    delay: retry_delay,
+                });
             }
 
             // Max retries exhausted or no retry policy.
@@ -1526,8 +1742,8 @@ impl OrbflowEngine {
 
             // Check if saga compensation is needed.
             if self.has_compensation(&wf, &inst) {
-                return crate::saga::start_compensation(self, &mut inst, &wf, &result.node_id)
-                    .await;
+                crate::saga::start_compensation(self, &mut inst, &wf, &result.node_id).await?;
+                return Ok(PostLockAction::None);
             }
 
             inst.status = InstanceStatus::Failed;
@@ -1598,7 +1814,7 @@ impl OrbflowEngine {
 
             self.save_instance(&mut inst).await?;
             self.cleanup_instance(&inst);
-            return Ok(());
+            return Ok(PostLockAction::None);
         }
 
         // Success path.
@@ -1716,7 +1932,7 @@ impl OrbflowEngine {
                 }
                 self.save_instance(&mut inst).await?;
                 self.cleanup_instance(&inst);
-                return Ok(());
+                return Ok(PostLockAction::None);
             }
         }
 
@@ -1772,12 +1988,11 @@ impl OrbflowEngine {
                 let node = node.clone();
                 if let Err(e) = self.dispatch_node(&mut inst, &wf, &node).await {
                     error!(node = node_id.as_str(), error = %e, "failed to dispatch node");
-                    self.mark_node_dispatch_failed(&mut inst, node_id, &e)
+                    self.handle_node_dispatch_error(&mut inst, &wf, node_id, &e)
                         .await?;
-                    self.cascade_terminal_skips(&wf, &mut inst).await;
                     self.save_instance(&mut inst).await?;
                     self.cleanup_instance(&inst);
-                    return Ok(());
+                    return Ok(PostLockAction::None);
                 }
             }
         }
@@ -1893,7 +2108,7 @@ impl OrbflowEngine {
 
         self.save_instance(&mut inst).await?;
         self.cleanup_instance(&inst);
-        Ok(())
+        Ok(PostLockAction::None)
     }
 
     async fn start_workflow_with_owner(
@@ -1965,22 +2180,16 @@ impl OrbflowEngine {
                 input: input.clone(),
             });
 
-            // Create instance and append start event (separate calls).
-            self.store.create_instance(&inst).await?;
+            // Create instance and append start event atomically so crash
+            // recovery never sees an orphan instance without its genesis event.
+            self.store.create_instance_tx(&inst, start_event).await?;
             self.metrics.record_workflow_started(&wf.id.0);
-            if let Err(e) = self.store.append_event(start_event).await {
-                warn!(
-                    instance = %inst.id,
-                    error = %e,
-                    "failed to append instance-started event"
-                );
-            }
 
             // Resolve capability nodes first.
             self.resolve_capabilities(&mut inst, &wf).await?;
 
             // Mark trigger nodes as completed so downstream nodes can be dispatched.
-            let has_triggers = self.mark_triggers_completed(&mut inst, &wf, &input);
+            let has_triggers = self.mark_triggers_completed(&mut inst, &wf, &input)?;
 
             // Dispatch initial nodes.
             self.dispatch_initial_nodes(&mut inst, &wf, has_triggers)
@@ -2457,9 +2666,8 @@ impl Engine for OrbflowEngine {
         // Dispatch the node for execution.
         if let Err(e) = self.dispatch_node(&mut inst, &wf, node).await {
             error!(instance = %instance_id, node = %node_id, error = %e, "failed to dispatch approved node");
-            self.mark_node_dispatch_failed(&mut inst, node_id, &e)
+            self.handle_node_dispatch_error(&mut inst, &wf, node_id, &e)
                 .await?;
-            self.cascade_terminal_skips(&wf, &mut inst).await;
             self.save_instance(&mut inst).await?;
             self.cleanup_instance(&inst);
             return Err(e);

@@ -8,6 +8,7 @@ import { StructuredOutput } from "./structured-output";
 import { StreamingOutput } from "./streaming-output";
 import { useNodeStream } from "@/hooks/use-node-stream";
 import { api } from "@/lib/api";
+import { useOrbflow } from "@/core/context/orbflow-provider";
 import type { Instance, NodeState, WorkflowNode } from "@/lib/api";
 import { STATUS_THEMES, FALLBACK_THEME } from "@/lib/execution";
 import { extractContentType } from "@/lib/output-safety";
@@ -62,6 +63,7 @@ function NodeDetailDrawer({
   const [isOpen, setIsOpen] = useState(false);
   const drawerRef = useRef<HTMLDivElement>(null);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const { config } = useOrbflow();
 
   useFocusTrap(drawerRef);
 
@@ -80,6 +82,7 @@ function NodeDetailDrawer({
   const { isStreaming, tokens, finalOutput, error: streamError } = useNodeStream({
     url: streamUrl,
     enabled: !!streamUrl,
+    authToken: config.getAuthToken?.(),
   });
 
   // Animate in on mount

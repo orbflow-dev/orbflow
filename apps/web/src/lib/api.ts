@@ -5,6 +5,14 @@ export const API_ROOT = process.env.NEXT_PUBLIC_API_URL || "http://localhost:808
 /** Versioned API base URL -- used for all API calls. */
 export const BASE_URL = `${API_ROOT}/api/v1`;
 
+/** Returns the configured bearer token, if this deployment uses one. */
+export function getAuthToken(): string | undefined {
+  const envToken = process.env.NEXT_PUBLIC_ORBFLOW_AUTH_TOKEN;
+  if (envToken) return envToken;
+  if (typeof window === "undefined") return undefined;
+  return window.localStorage.getItem("orbflow.authToken") ?? undefined;
+}
+
 /**
  * Module-level singleton API client.
  *
@@ -14,7 +22,8 @@ export const BASE_URL = `${API_ROOT}/api/v1`;
  * URL (e.g. in tests or multi-tenant scenarios) use `createApiClient(url)`
  * from "@orbflow/core/client" directly rather than importing this singleton.
  */
-export const api = createApiClient(BASE_URL);
+const authToken = getAuthToken();
+export const api = createApiClient(authToken ? { baseUrl: BASE_URL, authToken } : BASE_URL);
 
 // Re-export API types from the canonical source (@orbflow/core)
 export type {

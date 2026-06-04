@@ -424,7 +424,10 @@ pub trait NodeExecutor: Send + Sync {
 }
 
 /// Composite store: workflows + instances + events.
-pub trait Store: WorkflowStore + InstanceStore + EventStore + Send + Sync {}
+pub trait Store:
+    WorkflowStore + InstanceStore + EventStore + AtomicInstanceCreator + Send + Sync
+{
+}
 
 /// Manages workflow definitions.
 #[async_trait]

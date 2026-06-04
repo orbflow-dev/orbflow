@@ -113,7 +113,7 @@ pub(crate) async fn resume_running(engine: &OrbflowEngine) -> Result<(), Orbflow
                         "failed to re-dispatch node"
                     );
                     if let Err(mark_err) = engine
-                        .mark_node_dispatch_failed(&mut inst, node_id, &e)
+                        .handle_node_dispatch_error(&mut inst, &wf, node_id, &e)
                         .await
                     {
                         error!(
@@ -123,7 +123,6 @@ pub(crate) async fn resume_running(engine: &OrbflowEngine) -> Result<(), Orbflow
                             "failed to persist resume dispatch failure"
                         );
                     } else {
-                        engine.cascade_terminal_skips(&wf, &mut inst).await;
                         if let Err(save_err) = engine.save_instance(&mut inst).await {
                             error!(
                                 instance = %inst.id,

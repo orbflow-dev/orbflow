@@ -1405,7 +1405,7 @@ function BuilderInner({ workflow, defaultName }: Props) {
         }
       }
 
-      const [{ buildConditionExpression }, { TRIGGER_TYPE_MAP }] = await Promise.all([
+      const [{ buildConditionExpression }, { TRIGGER_TYPE_MAP, toWireTriggerType }] = await Promise.all([
         import("../utils/cel-builder"),
         import("../utils/trigger-types"),
       ]);
@@ -1432,9 +1432,10 @@ function BuilderInner({ workflow, defaultName }: Props) {
             const nodeKind = (n.data.nodeKind as "trigger" | "action" | "capability") || undefined;
             let triggerConfig: { trigger_type: string; cron?: string; event_name?: string; path?: string } | undefined;
             if (nodeKind === "trigger") {
-              const triggerType = TRIGGER_TYPE_MAP[pluginRef] || "manual";
+              const uiTriggerType = TRIGGER_TYPE_MAP[pluginRef] || "manual";
+              const triggerType = toWireTriggerType(uiTriggerType);
               triggerConfig = { trigger_type: triggerType };
-              if (triggerType === "cron" && nodeParams) {
+              if (triggerType === "schedule" && nodeParams) {
                 const cronParam = Object.values(nodeParams).find((p) => p.key === "cron");
                 if (cronParam?.value) triggerConfig.cron = String(cronParam.value);
               }
@@ -1493,12 +1494,19 @@ function BuilderInner({ workflow, defaultName }: Props) {
               // Sync position from xyflow node (may have been dragged)
               const prefix = a.type === "text" ? "text_" : "sticky_";
               const xyNode = nodes.find((n) => n.id === `${prefix}${a.id}`);
+              const width = xyNode?.data?.width ?? xyNode?.style?.width;
+              const height = xyNode?.data?.height ?? xyNode?.style?.height;
+              const style = {
+                ...(a.style ?? {}),
+                ...(typeof width === "number" ? { width } : {}),
+                ...(typeof height === "number" ? { height } : {}),
+              };
               return {
                 id: a.id,
                 type: a.type,
                 content: a.content,
                 position: xyNode?.position ?? a.position,
-                style: a.style,
+                style: Object.keys(style).length ? style : undefined,
               };
             })
           : undefined,

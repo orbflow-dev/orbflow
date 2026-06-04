@@ -281,7 +281,8 @@ pub async fn list_workflows(
     axum::Extension(auth_user): axum::Extension<AuthUser>,
     Query(params): Query<PaginationParams>,
 ) -> Response {
-    if let Err(resp) = check_permission(
+    let opts = params.to_list_options();
+    let can_view_all = match has_permission(
         &state.rbac,
         &auth_user.user_id,
         Permission::View,
@@ -289,12 +290,44 @@ pub async fn list_workflows(
         None,
         state.bootstrap_admin.as_deref(),
     ) {
-        return resp;
-    }
+        Ok(can_view_all) => can_view_all,
+        Err(resp) => return resp,
+    };
 
-    let opts = params.to_list_options();
-    match state.engine.list_workflows(opts.clone()).await {
-        Ok((workflows, total)) => write_list(workflows, total, opts.offset, opts.limit),
+    let fetch_opts = if can_view_all {
+        opts.clone()
+    } else {
+        ListOptions {
+            offset: 0,
+            limit: i64::MAX,
+        }
+    };
+
+    match state.engine.list_workflows(fetch_opts).await {
+        Ok((workflows, total)) => {
+            if can_view_all {
+                return write_list(workflows, total, opts.offset, opts.limit);
+            }
+
+            let mut visible = Vec::new();
+            for wf in workflows {
+                match has_permission(
+                    &state.rbac,
+                    &auth_user.user_id,
+                    Permission::View,
+                    &wf.id.0,
+                    None,
+                    state.bootstrap_admin.as_deref(),
+                ) {
+                    Ok(true) => visible.push(wf),
+                    Ok(false) => {}
+                    Err(resp) => return resp,
+                }
+            }
+            let total = visible.len() as i64;
+            let page = orbflow_core::paginate(&visible, &opts);
+            write_list(page, total, opts.offset, opts.limit)
+        }
         Err(e) => {
             error!(error = %e, "failed to list workflows");
             write_error(
@@ -579,10 +612,34 @@ pub async fn list_instances(
     Query(params): Query<PaginationParams>,
 ) -> Response {
     let opts = params.to_list_options();
-    match state.engine.list_instances(opts.clone()).await {
+    let can_view_all = match has_permission(
+        &state.rbac,
+        &auth_user.user_id,
+        Permission::View,
+        "*",
+        None,
+        state.bootstrap_admin.as_deref(),
+    ) {
+        Ok(can_view_all) => can_view_all,
+        Err(resp) => return resp,
+    };
+
+    let fetch_opts = if can_view_all {
+        opts.clone()
+    } else {
+        ListOptions {
+            offset: 0,
+            limit: i64::MAX,
+        }
+    };
+
+    match state.engine.list_instances(fetch_opts).await {
         Ok((instances, total)) => {
-            let original_count = instances.len();
-            let mut visible = Vec::with_capacity(original_count);
+            if can_view_all {
+                return write_list(instances, total, opts.offset, opts.limit);
+            }
+
+            let mut visible = Vec::new();
             for inst in instances {
                 match has_permission(
                     &state.rbac,
@@ -597,12 +654,9 @@ pub async fn list_instances(
                     Err(resp) => return resp,
                 }
             }
-            let visible_total = if visible.len() == original_count {
-                total
-            } else {
-                visible.len() as i64
-            };
-            write_list(visible, visible_total, opts.offset, opts.limit)
+            let total = visible.len() as i64;
+            let page = orbflow_core::paginate(&visible, &opts);
+            write_list(page, total, opts.offset, opts.limit)
         }
         Err(e) => {
             error!(error = %e, "failed to list instances");
@@ -671,6 +725,65 @@ pub async fn cancel_instance(
 }
 
 // --- Credentials ---
+
+/// Request body for updating a credential. All fields are optional so metadata
+/// edits can omit secret data without replacing it with an empty/redacted map.
+#[derive(Debug, Deserialize)]
+pub struct UpdateCredentialRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default, rename = "type")]
+    pub credential_type: Option<String>,
+    #[serde(default)]
+    pub data: Option<HashMap<String, serde_json::Value>>,
+    #[serde(default)]
+    pub description: Option<Option<String>>,
+}
+
+fn is_redacted_secret_value(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => true,
+        serde_json::Value::String(s) => {
+            let trimmed = s.trim();
+            trimmed.is_empty()
+                || trimmed.eq_ignore_ascii_case("[redacted]")
+                || trimmed.eq_ignore_ascii_case("redacted")
+                || trimmed.chars().all(|c| matches!(c, '*' | '•' | '●' | '·'))
+        }
+        _ => false,
+    }
+}
+
+fn merge_credential_data(
+    existing: &orbflow_core::Credential,
+    incoming: Option<HashMap<String, serde_json::Value>>,
+    credential_type: &str,
+) -> HashMap<String, serde_json::Value> {
+    let Some(incoming) = incoming else {
+        return existing.data.clone();
+    };
+    if incoming.is_empty() {
+        return existing.data.clone();
+    }
+
+    let mut merged = existing.data.clone();
+    let schema_known = orbflow_core::CredentialSchemas::get(credential_type).is_some();
+    let secret_keys = orbflow_core::CredentialSchemas::secret_keys(credential_type);
+
+    for (key, value) in incoming {
+        let protected = if schema_known {
+            secret_keys.contains(key.as_str())
+        } else {
+            existing.data.contains_key(&key)
+        };
+        if protected && is_redacted_secret_value(&value) {
+            continue;
+        }
+        merged.insert(key, value);
+    }
+
+    merged
+}
 
 pub async fn create_credential(
     State(state): State<AppState>,
@@ -799,7 +912,7 @@ pub async fn update_credential(
     State(state): State<AppState>,
     axum::Extension(auth_user): axum::Extension<AuthUser>,
     Path(id): Path<String>,
-    Json(req): Json<orbflow_core::CreateCredentialRequest>,
+    Json(req): Json<UpdateCredentialRequest>,
 ) -> Response {
     if let Err(resp) = check_permission(
         &state.rbac,
@@ -817,18 +930,15 @@ pub async fn update_credential(
         None => return write_error(StatusCode::NOT_FOUND, "credentials API not enabled"),
     };
 
-    let mut cred = match req.into_credential() {
-        Ok(c) => c,
-        Err(e) => return write_safe_error(&e),
-    };
-    cred.id = match orbflow_core::CredentialId::new(id) {
+    let cred_id = match orbflow_core::CredentialId::new(id) {
         Ok(id) => id,
         Err(e) => return write_safe_error(&e),
     };
+
     // Verify the caller owns this credential before allowing update,
-    // and capture the existing record to preserve created_at.
+    // and capture the existing record to preserve secrets and created_at.
     let existing = match store
-        .get_credential_for_owner(&cred.id, Some(&auth_user.user_id))
+        .get_credential_for_owner(&cred_id, Some(&auth_user.user_id))
         .await
     {
         Ok(c) => c,
@@ -847,12 +957,62 @@ pub async fn update_credential(
             };
         }
     };
-    cred.owner_id = Some(auth_user.user_id.clone());
-    cred.created_at = existing.created_at;
-    // Preserve access tier and policy from existing credential — tier changes
-    // require a separate admin-level operation, not a standard credential update.
-    cred.access_tier = existing.access_tier;
-    cred.policy = existing.policy;
+
+    let name = req.name.unwrap_or_else(|| existing.name.clone());
+    let credential_type = req
+        .credential_type
+        .unwrap_or_else(|| existing.credential_type.clone());
+    let description = req
+        .description
+        .unwrap_or_else(|| existing.description.clone());
+    let type_changed = credential_type != existing.credential_type;
+
+    let data = if type_changed {
+        let Some(data) = req.data else {
+            return write_error(
+                StatusCode::BAD_REQUEST,
+                "credential type change requires explicit credential data",
+            );
+        };
+        if data.is_empty() || data.values().any(is_redacted_secret_value) {
+            return write_error(
+                StatusCode::BAD_REQUEST,
+                "credential type change requires explicit secret values",
+            );
+        }
+        data
+    } else {
+        merge_credential_data(&existing, req.data, &credential_type)
+    };
+
+    let validation = orbflow_core::CreateCredentialRequest {
+        name: name.clone(),
+        credential_type: credential_type.clone(),
+        data: data.clone(),
+        description: description.clone(),
+        access_tier: Some(existing.access_tier),
+        policy: existing.policy.clone(),
+    };
+    if let Err(e) = validation.validate() {
+        return write_safe_error(&e);
+    }
+
+    let cred = orbflow_core::Credential {
+        id: cred_id,
+        name,
+        credential_type,
+        data,
+        description,
+        owner_id: existing
+            .owner_id
+            .clone()
+            .or_else(|| Some(auth_user.user_id.clone())),
+        access_tier: existing.access_tier,
+        policy: existing.policy,
+        created_at: existing.created_at,
+        updated_at: Utc::now(),
+    };
+
     match store.update_credential(&cred).await {
         Ok(()) => write_data(StatusCode::OK, orbflow_core::CredentialSummary::from(&cred)),
         Err(OrbflowError::NotFound) => write_error(StatusCode::NOT_FOUND, "credential not found"),
@@ -3002,7 +3162,8 @@ pub struct CreateChangeRequestBody {
     pub description: Option<String>,
     pub proposed_definition: serde_json::Value,
     pub base_version: i32,
-    pub author: String,
+    #[serde(default)]
+    pub author: Option<String>,
     #[serde(default)]
     pub reviewers: Vec<String>,
 }
@@ -3030,7 +3191,8 @@ pub struct RejectChangeRequestBody {
 /// Request body for adding a comment.
 #[derive(Debug, Deserialize)]
 pub struct AddCommentBody {
-    pub author: String,
+    #[serde(default)]
+    pub author: Option<String>,
     pub body: String,
     #[serde(default)]
     pub node_id: Option<String>,
@@ -3051,6 +3213,43 @@ pub struct CommentResolvePathParams {
     pub id: String,
     pub cr_id: String,
     pub comment_id: String,
+}
+
+#[allow(clippy::result_large_err)]
+fn normalize_change_request_definition(
+    workflow_id: &str,
+    definition: serde_json::Value,
+) -> Result<serde_json::Value, Response> {
+    let mut workflow: orbflow_core::Workflow = serde_json::from_value(definition).map_err(|e| {
+        write_error(
+            StatusCode::BAD_REQUEST,
+            format!("proposed_definition must be a backend workflow definition: {e}"),
+        )
+    })?;
+
+    if workflow.id.0.is_empty() {
+        workflow.id = WorkflowId::new(workflow_id);
+    } else if workflow.id.0 != workflow_id {
+        return Err(write_error(
+            StatusCode::BAD_REQUEST,
+            "proposed_definition workflow id does not match path",
+        ));
+    }
+
+    if workflow.name.trim().is_empty() {
+        return Err(write_error(
+            StatusCode::BAD_REQUEST,
+            "proposed_definition workflow name must not be empty",
+        ));
+    }
+
+    serde_json::to_value(workflow).map_err(|e| {
+        error!(error = %e, "failed to normalize change request workflow definition");
+        write_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to normalize proposed_definition",
+        )
+    })
 }
 
 /// `POST /workflows/{id}/change-requests`
@@ -3085,15 +3284,6 @@ pub async fn create_change_request(
             "title must not exceed 200 characters",
         );
     }
-    if body.author.trim().is_empty() {
-        return write_error(StatusCode::BAD_REQUEST, "author must not be empty");
-    }
-    if body.author.len() > 100 {
-        return write_error(
-            StatusCode::BAD_REQUEST,
-            "author must not exceed 100 characters",
-        );
-    }
     if let Some(ref desc) = body.description
         && desc.len() > 5000
     {
@@ -3103,15 +3293,21 @@ pub async fn create_change_request(
         );
     }
 
+    let proposed_definition =
+        match normalize_change_request_definition(&id, body.proposed_definition) {
+            Ok(definition) => definition,
+            Err(resp) => return resp,
+        };
+
     let cr = orbflow_core::ChangeRequest {
         id: Uuid::new_v4().to_string(),
         workflow_id: WorkflowId::new(id),
         title: body.title,
         description: body.description,
-        proposed_definition: body.proposed_definition,
+        proposed_definition,
         base_version: body.base_version,
         status: orbflow_core::ChangeRequestStatus::Draft,
-        author: body.author,
+        author: auth_user.user_id.clone(),
         reviewers: body.reviewers,
         comments: Vec::new(),
         created_at: Utc::now(),
@@ -3297,10 +3493,18 @@ pub async fn update_change_request(
         );
     }
 
+    let proposed_definition = match body.proposed_definition {
+        Some(definition) => match normalize_change_request_definition(&params.id, definition) {
+            Ok(definition) => definition,
+            Err(resp) => return resp,
+        },
+        None => cr.proposed_definition,
+    };
+
     let updated = orbflow_core::ChangeRequest {
         title: body.title.unwrap_or(cr.title),
         description: body.description.or(cr.description),
-        proposed_definition: body.proposed_definition.unwrap_or(cr.proposed_definition),
+        proposed_definition,
         reviewers: body.reviewers.unwrap_or(cr.reviewers),
         updated_at: Utc::now(),
         ..cr
@@ -3683,9 +3887,15 @@ pub async fn merge_change_request(
         );
     }
 
+    let proposed_definition =
+        match normalize_change_request_definition(&params.id, cr.proposed_definition.clone()) {
+            Ok(definition) => definition,
+            Err(resp) => return resp,
+        };
+
     // Atomic merge: locks CR + workflow rows, checks versions, updates both in one transaction.
     match store
-        .merge_change_request(&params.cr_id, cr.base_version, &cr.proposed_definition)
+        .merge_change_request(&params.cr_id, cr.base_version, &proposed_definition)
         .await
     {
         Ok(()) => {
@@ -3755,16 +3965,6 @@ pub async fn add_cr_comment(
             "comment body must not exceed 5000 characters",
         );
     }
-    if body.author.trim().is_empty() {
-        return write_error(StatusCode::BAD_REQUEST, "author must not be empty");
-    }
-    if body.author.len() > 100 {
-        return write_error(
-            StatusCode::BAD_REQUEST,
-            "author must not exceed 100 characters",
-        );
-    }
-
     // Verify the change request exists and belongs to this workflow.
     let cr = match store.get_change_request(&params.cr_id).await {
         Ok(cr) => cr,
@@ -3786,7 +3986,7 @@ pub async fn add_cr_comment(
 
     let comment = orbflow_core::ReviewComment {
         id: Uuid::new_v4().to_string(),
-        author: body.author,
+        author: auth_user.user_id.clone(),
         body: body.body,
         node_id: body.node_id,
         edge_ref: body.edge_ref,
@@ -3974,6 +4174,17 @@ pub struct BudgetRequest {
 
 fn default_budget_period() -> BudgetPeriod {
     BudgetPeriod::Monthly
+}
+
+fn advance_budget_reset(
+    mut reset_at: chrono::DateTime<Utc>,
+    period: BudgetPeriod,
+    now: chrono::DateTime<Utc>,
+) -> chrono::DateTime<Utc> {
+    while reset_at <= now {
+        reset_at = compute_next_reset(reset_at, period);
+    }
+    reset_at
 }
 
 /// Query parameters for cost analytics.
@@ -4170,10 +4381,16 @@ pub async fn update_budget(
         }
     };
 
-    let reset_at = if body.period != existing.period {
-        compute_next_reset(Utc::now(), body.period)
+    let now = Utc::now();
+    let (current_usd, reset_at) = if body.period != existing.period {
+        (0.0, compute_next_reset(now, body.period))
+    } else if existing.reset_at <= now {
+        (
+            0.0,
+            advance_budget_reset(existing.reset_at, existing.period, now),
+        )
     } else {
-        existing.reset_at
+        (existing.current_usd, existing.reset_at)
     };
 
     let updated = AccountBudget {
@@ -4182,7 +4399,7 @@ pub async fn update_budget(
         team: body.team,
         period: body.period,
         limit_usd: body.limit_usd,
-        current_usd: existing.current_usd,
+        current_usd,
         reset_at,
         created_at: existing.created_at,
     };
@@ -4407,6 +4624,23 @@ pub struct AlertRequest {
     pub enabled: bool,
 }
 
+/// Partial request body for updating an alert rule.
+#[derive(Debug, Deserialize)]
+pub struct UpdateAlertRequest {
+    #[serde(default)]
+    pub workflow_id: Option<Option<String>>,
+    #[serde(default)]
+    pub metric: Option<orbflow_core::AlertMetric>,
+    #[serde(default)]
+    pub operator: Option<orbflow_core::AlertOperator>,
+    #[serde(default)]
+    pub threshold: Option<f64>,
+    #[serde(default)]
+    pub channel: Option<orbflow_core::AlertChannel>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -4488,7 +4722,7 @@ pub async fn update_alert(
     State(state): State<AppState>,
     axum::Extension(auth_user): axum::Extension<AuthUser>,
     Path(id): Path<String>,
-    Json(body): Json<AlertRequest>,
+    Json(body): Json<UpdateAlertRequest>,
 ) -> Response {
     if let Err(resp) = check_permission(
         &state.rbac,
@@ -4520,12 +4754,12 @@ pub async fn update_alert(
 
     let updated = AlertRule {
         id: existing.id,
-        workflow_id: body.workflow_id,
-        metric: body.metric,
-        operator: body.operator,
-        threshold: body.threshold,
-        channel: body.channel,
-        enabled: body.enabled,
+        workflow_id: body.workflow_id.unwrap_or(existing.workflow_id),
+        metric: body.metric.unwrap_or(existing.metric),
+        operator: body.operator.unwrap_or(existing.operator),
+        threshold: body.threshold.unwrap_or(existing.threshold),
+        channel: body.channel.unwrap_or(existing.channel),
+        enabled: body.enabled.unwrap_or(existing.enabled),
         created_at: existing.created_at,
     };
 

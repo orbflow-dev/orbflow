@@ -13,6 +13,7 @@ use chrono::Utc;
 
 use orbflow_core::OrbflowError;
 use orbflow_core::credential::{Credential, CredentialId};
+use orbflow_core::credential_proxy::{CredentialAccessTier, CredentialPolicy};
 use orbflow_core::options::EngineOptionsBuilder;
 use orbflow_core::ports::{Bus, CredentialStore, Engine, ListOptions, Store};
 use orbflow_core::rbac::{Permission, PolicyBinding, PolicyScope, RbacPolicy};
@@ -107,7 +108,7 @@ fn simple_workflow(id: &str) -> Workflow {
 }
 
 #[tokio::test]
-async fn test_dispatch_includes_resolved_secret_credentials_for_worker_execution() {
+async fn test_proxy_credential_reference_fails_closed_before_task_publish() {
     let store = Arc::new(MemStore::new());
     let bus = Arc::new(MockBus::new());
     let engine = build_engine_with_rbac(Arc::clone(&store), Arc::clone(&bus), None);
@@ -126,7 +127,7 @@ async fn test_dispatch_includes_resolved_secret_credentials_for_worker_execution
             data: cred_data,
             description: None,
             owner_id: Some("alice".into()),
-            access_tier: Default::default(),
+            access_tier: CredentialAccessTier::Proxy,
             policy: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -149,7 +150,7 @@ async fn test_dispatch_includes_resolved_secret_credentials_for_worker_execution
     );
 
     engine.create_workflow(&wf).await.unwrap();
-    engine
+    let inst = engine
         .start_workflow_for_owner(
             &WorkflowId::new("wf-cred"),
             std::collections::HashMap::new(),
@@ -158,20 +159,87 @@ async fn test_dispatch_includes_resolved_secret_credentials_for_worker_execution
         .await
         .unwrap();
 
+    assert_eq!(
+        inst.status,
+        orbflow_core::InstanceStatus::Failed,
+        "unsupported proxy/default credential execution should fail closed visibly"
+    );
+    let node_error = inst
+        .node_states
+        .get("action-1")
+        .and_then(|state| state.error.as_deref())
+        .unwrap_or("");
+    assert!(
+        node_error.contains("proxy") && node_error.contains("raw"),
+        "unsupported tier failure should explain proxy/raw policy requirements, got {node_error:?}"
+    );
+    assert_eq!(
+        bus.messages_for(&task_subject("test")).len(),
+        0,
+        "unsupported credential tiers must not publish a task with redacted or missing secrets"
+    );
+}
+
+#[tokio::test]
+async fn test_raw_credential_dispatch_requires_explicit_raw_policy() {
+    let store = Arc::new(MemStore::new());
+    let bus = Arc::new(MockBus::new());
+    let engine = build_engine_with_rbac(Arc::clone(&store), Arc::clone(&bus), None);
+
+    let mut cred_data = std::collections::HashMap::new();
+    cred_data.insert("api_key".into(), serde_json::json!("sk-raw-test"));
+    store
+        .create_credential(&Credential {
+            id: CredentialId::new("cred-raw").unwrap(),
+            name: "OpenAI Raw".into(),
+            credential_type: "openai".into(),
+            data: cred_data,
+            description: None,
+            owner_id: Some("alice".into()),
+            access_tier: CredentialAccessTier::Raw,
+            policy: Some(CredentialPolicy {
+                allowed_tiers: vec![CredentialAccessTier::Raw],
+                ..Default::default()
+            }),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
+        .await
+        .unwrap();
+
+    let trigger = make_node("trigger-1", "builtin:trigger-manual", NodeKind::Trigger);
+    let mut action = make_node("action-1", "plugin:ai-codegen", NodeKind::Action);
+    action.parameters = vec![Parameter {
+        key: "credential_id".into(),
+        mode: ParameterMode::Static,
+        value: Some(serde_json::json!("cred-raw")),
+        expression: None,
+    }];
+    let wf = make_workflow(
+        "wf-raw-cred",
+        vec![trigger, action],
+        vec![make_edge("e1", "trigger-1", "action-1")],
+    );
+
+    engine.create_workflow(&wf).await.unwrap();
+    engine
+        .start_workflow_for_owner(
+            &WorkflowId::new("wf-raw-cred"),
+            std::collections::HashMap::new(),
+            "alice",
+        )
+        .await
+        .unwrap();
+
     let task_msgs = bus.messages_for(&task_subject("test"));
-    assert_eq!(task_msgs.len(), 1, "expected one dispatched task");
+    assert_eq!(task_msgs.len(), 1, "expected one dispatched raw task");
 
     let task: TaskMessage = serde_json::from_slice(&task_msgs[0].data).unwrap();
     let params = task.parameters.expect("task should include parameters");
-    // credential_id should be stripped from the dispatched task.
     assert_eq!(params.get("credential_id"), None);
-    // Secret fields (field_type = "password") are redacted to Null before bus
-    // publish to prevent plaintext secrets from traveling over NATS.
-    assert_eq!(params.get("api_key"), Some(&serde_json::Value::Null));
-    // Non-secret fields (field_type = "string") remain for the worker.
     assert_eq!(
-        params.get("base_url"),
-        Some(&serde_json::json!("https://api.openai.com/v1"))
+        params.get("api_key"),
+        Some(&serde_json::json!("sk-raw-test"))
     );
 }
 

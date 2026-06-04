@@ -527,27 +527,22 @@ async fn handle_start_workflow(engine: &Arc<dyn Engine>, body: &serde_json::Valu
         Err(resp) => return resp,
     };
 
-    let owner_id = match body.get("owner_id") {
-        Some(value) if value.is_null() => None,
-        Some(value) => match value.as_str().map(str::trim).filter(|s| !s.is_empty()) {
-            Some(owner_id) => Some(owner_id),
-            None => {
-                return error_response("INVALID_ARGUMENT", "owner_id must be a non-empty string");
-            }
-        },
-        None => None,
-    };
-
-    let start_result = match owner_id {
-        Some(owner_id) => {
-            engine
-                .start_workflow_for_owner(&wf_id, input, owner_id)
-                .await
+    if let Some(owner_id) = body.get("owner_id").filter(|value| !value.is_null()) {
+        if owner_id
+            .as_str()
+            .map(str::trim)
+            .filter(|owner_id| !owner_id.is_empty())
+            .is_none()
+        {
+            return error_response("INVALID_ARGUMENT", "owner_id must be a non-empty string");
         }
-        None => engine.start_workflow(&wf_id, input).await,
-    };
+        return error_response(
+            "UNAUTHENTICATED",
+            "owner-scoped StartWorkflow requires a trusted transport principal; request body owner_id is not accepted",
+        );
+    }
 
-    match start_result {
+    match engine.start_workflow(&wf_id, input).await {
         Ok(inst) => match types::instance_to_bytes(&inst) {
             Ok(data) => ok_response(serde_json::json!({ "data": data })),
             Err(e) => orbflow_error_to_response(e),
@@ -618,18 +613,18 @@ fn error_response(code: &str, message: impl Into<String>) -> RpcResponse {
 
 /// Maps a [`OrbflowError`] to an RPC error response.
 fn orbflow_error_to_response(e: OrbflowError) -> RpcResponse {
-    let code = match &e {
-        OrbflowError::NotFound => "NOT_FOUND",
-        OrbflowError::AlreadyExists => "ALREADY_EXISTS",
-        OrbflowError::Conflict => "ABORTED",
-        OrbflowError::InvalidNodeConfig(_) => "INVALID_ARGUMENT",
-        OrbflowError::CycleDetected => "INVALID_ARGUMENT",
-        OrbflowError::DuplicateNode => "INVALID_ARGUMENT",
-        OrbflowError::DuplicateEdge => "INVALID_ARGUMENT",
-        OrbflowError::Forbidden(_) => "PERMISSION_DENIED",
-        OrbflowError::Cancelled => "CANCELLED",
-        OrbflowError::Timeout => "DEADLINE_EXCEEDED",
-        _ => "INTERNAL",
+    let code = if e.is_validation_error() {
+        "INVALID_ARGUMENT"
+    } else {
+        match &e {
+            OrbflowError::NotFound => "NOT_FOUND",
+            OrbflowError::AlreadyExists => "ALREADY_EXISTS",
+            OrbflowError::Conflict => "ABORTED",
+            OrbflowError::Forbidden(_) => "PERMISSION_DENIED",
+            OrbflowError::Cancelled => "CANCELLED",
+            OrbflowError::Timeout => "DEADLINE_EXCEEDED",
+            _ => "INTERNAL",
+        }
     };
 
     error_response(code, e.to_string())

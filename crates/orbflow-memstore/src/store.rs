@@ -489,6 +489,8 @@ impl ChangeRequestStore for MemStore {
         _expected_version: i32,
         new_definition: &serde_json::Value,
     ) -> Result<(), OrbflowError> {
+        orbflow_core::versioning::reject_reactflow_change_definition(new_definition)?;
+
         let mut cr_map = self.change_requests.write().await;
         let cr = cr_map.get(cr_id).ok_or(OrbflowError::NotFound)?;
 

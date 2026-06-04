@@ -3,7 +3,7 @@
 
 //! Wire format types for the message bus — the contract between engine and worker.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, error::Error, fmt};
 
 use serde::{Deserialize, Serialize};
 
@@ -68,6 +68,135 @@ pub const WIRE_VERSION: u8 = 1;
 /// another persisted field to every node state.
 pub fn dispatch_identity(instance_id: &InstanceId, node_id: &str, attempt: i32) -> String {
     format!("{}:{node_id}:{attempt}", instance_id.0)
+}
+
+/// Result identity validation path accepted for a worker result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResultIdentityMode {
+    /// Result carried a matching dispatch_id and exact attempt.
+    Modern,
+    /// Legacy v1 result omitted dispatch_id and was accepted by explicit policy.
+    LegacyV1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResultIdentityError {
+    InstanceMismatch {
+        expected: InstanceId,
+        actual: InstanceId,
+    },
+    NodeMismatch {
+        expected: String,
+        actual: String,
+    },
+    AttemptMismatch {
+        node_id: String,
+        expected: i32,
+        actual: i32,
+    },
+    MissingDispatchId {
+        node_id: String,
+    },
+    DispatchIdMismatch {
+        node_id: String,
+        expected: String,
+        actual: String,
+    },
+}
+
+impl fmt::Display for ResultIdentityError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InstanceMismatch { expected, actual } => write!(
+                f,
+                "result instance_id {actual} does not match expected instance_id {expected}"
+            ),
+            Self::NodeMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "result node_id {actual} does not match expected node_id {expected}"
+                )
+            }
+            Self::AttemptMismatch {
+                node_id,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "stale result for node {node_id}: attempt {actual} does not match expected attempt {expected}"
+            ),
+            Self::MissingDispatchId { node_id } => {
+                write!(f, "result for node {node_id} is missing dispatch_id")
+            }
+            Self::DispatchIdMismatch {
+                node_id,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "stale result for node {node_id}: dispatch_id {actual} does not match expected {expected}"
+            ),
+        }
+    }
+}
+
+impl Error for ResultIdentityError {}
+
+/// Verifies that a worker result belongs to the expected dispatch attempt.
+///
+/// The modern path requires exact instance, node, attempt, and dispatch_id
+/// matches. Set `allow_legacy_v1_without_dispatch_id` only for documented
+/// rolling-upgrade windows where v1 workers may omit `dispatch_id`.
+pub fn verify_result_identity(
+    result: &ResultMessage,
+    expected_instance_id: &InstanceId,
+    expected_node_id: &str,
+    expected_attempt: i32,
+    allow_legacy_v1_without_dispatch_id: bool,
+) -> Result<ResultIdentityMode, ResultIdentityError> {
+    if &result.instance_id != expected_instance_id {
+        return Err(ResultIdentityError::InstanceMismatch {
+            expected: expected_instance_id.clone(),
+            actual: result.instance_id.clone(),
+        });
+    }
+
+    if result.node_id != expected_node_id {
+        return Err(ResultIdentityError::NodeMismatch {
+            expected: expected_node_id.to_owned(),
+            actual: result.node_id.clone(),
+        });
+    }
+
+    if result.dispatch_id.is_none()
+        && allow_legacy_v1_without_dispatch_id
+        && result.v <= WIRE_VERSION
+        && (result.attempt == 0 || result.attempt == expected_attempt)
+    {
+        return Ok(ResultIdentityMode::LegacyV1);
+    }
+
+    if result.attempt != expected_attempt {
+        return Err(ResultIdentityError::AttemptMismatch {
+            node_id: result.node_id.clone(),
+            expected: expected_attempt,
+            actual: result.attempt,
+        });
+    }
+
+    let expected_dispatch_id =
+        dispatch_identity(expected_instance_id, expected_node_id, expected_attempt);
+    match result.dispatch_id.as_deref() {
+        Some(dispatch_id) if dispatch_id == expected_dispatch_id => Ok(ResultIdentityMode::Modern),
+        Some(dispatch_id) => Err(ResultIdentityError::DispatchIdMismatch {
+            node_id: result.node_id.clone(),
+            expected: expected_dispatch_id,
+            actual: dispatch_id.to_owned(),
+        }),
+        None => Err(ResultIdentityError::MissingDispatchId {
+            node_id: result.node_id.clone(),
+        }),
+    }
 }
 
 fn default_wire_version() -> u8 {
@@ -164,5 +293,69 @@ mod tests {
         let json = r#"{"result_id":"r-1","instance_id":"inst-1","node_id":"n1"}"#;
         let msg: ResultMessage = serde_json::from_str(json).unwrap();
         assert_eq!(msg.v, 1);
+    }
+
+    #[test]
+    fn result_identity_accepts_modern_dispatch() {
+        let result = ResultMessage {
+            result_id: Some("r-1".into()),
+            instance_id: InstanceId::new("inst-1"),
+            node_id: "node-1".into(),
+            attempt: 2,
+            dispatch_id: Some(dispatch_identity(&InstanceId::new("inst-1"), "node-1", 2)),
+            output: None,
+            error: None,
+            trace_context: None,
+            v: WIRE_VERSION,
+        };
+
+        assert_eq!(
+            verify_result_identity(&result, &InstanceId::new("inst-1"), "node-1", 2, false)
+                .unwrap(),
+            ResultIdentityMode::Modern
+        );
+    }
+
+    #[test]
+    fn result_identity_rejects_stale_attempt() {
+        let result = ResultMessage {
+            result_id: Some("r-1".into()),
+            instance_id: InstanceId::new("inst-1"),
+            node_id: "node-1".into(),
+            attempt: 1,
+            dispatch_id: Some(dispatch_identity(&InstanceId::new("inst-1"), "node-1", 1)),
+            output: None,
+            error: None,
+            trace_context: None,
+            v: WIRE_VERSION,
+        };
+
+        let err = verify_result_identity(&result, &InstanceId::new("inst-1"), "node-1", 2, false)
+            .unwrap_err();
+        assert!(matches!(err, ResultIdentityError::AttemptMismatch { .. }));
+    }
+
+    #[test]
+    fn result_identity_legacy_acceptance_is_explicit() {
+        let result = ResultMessage {
+            result_id: Some("r-1".into()),
+            instance_id: InstanceId::new("inst-1"),
+            node_id: "node-1".into(),
+            attempt: 0,
+            dispatch_id: None,
+            output: None,
+            error: None,
+            trace_context: None,
+            v: 1,
+        };
+
+        assert_eq!(
+            verify_result_identity(&result, &InstanceId::new("inst-1"), "node-1", 2, true).unwrap(),
+            ResultIdentityMode::LegacyV1
+        );
+        assert!(
+            verify_result_identity(&result, &InstanceId::new("inst-1"), "node-1", 2, false)
+                .is_err()
+        );
     }
 }

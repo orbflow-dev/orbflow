@@ -14,6 +14,8 @@ use uuid::Uuid;
 
 use crate::TriggerCallback;
 
+const FIRED_TRIGGER_NODE_ID_KEY: &str = "_fired_trigger_node_id";
+
 /// Schedules cron jobs that fire workflow triggers on a schedule.
 pub struct CronScheduler {
     /// Maps workflow ID -> list of job UUIDs registered for that workflow.
@@ -37,15 +39,33 @@ impl CronScheduler {
     ///
     /// The `cron_expr` should be a standard cron expression (5 or 6 fields).
     pub async fn add(&self, workflow_id: &WorkflowId, cron_expr: &str) {
+        self.add_trigger_node(workflow_id, None, cron_expr).await;
+    }
+
+    /// Registers a cron job for a trigger-kind node.
+    pub async fn add_trigger_node(
+        &self,
+        workflow_id: &WorkflowId,
+        trigger_node_id: Option<&str>,
+        cron_expr: &str,
+    ) {
         let wf_id = workflow_id.clone();
         let fire = Arc::clone(&self.fire);
+        let fired_node_id = trigger_node_id.map(str::to_owned);
 
         let job = match Job::new_async(cron_expr, move |_uuid, _lock| {
             let wf_id = wf_id.clone();
             let fire = Arc::clone(&fire);
+            let fired_node_id = fired_node_id.clone();
             Box::pin(async move {
                 info!(workflow = %wf_id, "cron trigger fired");
-                let payload = HashMap::new();
+                let mut payload = HashMap::new();
+                if let Some(node_id) = fired_node_id {
+                    payload.insert(
+                        FIRED_TRIGGER_NODE_ID_KEY.to_owned(),
+                        serde_json::Value::String(node_id),
+                    );
+                }
                 fire(wf_id, orbflow_core::TriggerType::Schedule, payload).await;
             })
         }) {
