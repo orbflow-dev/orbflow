@@ -16,6 +16,37 @@ use std::sync::Arc;
 use orbflow_core::OrbflowError;
 use orbflow_core::credential_proxy::{CapabilityRequest, CapabilityResponse};
 use orbflow_core::ports::CredentialStore;
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
+
+/// DNS resolver that validates resolved IP addresses to prevent SSRF and DNS rebinding attacks.
+struct ProxySsrfSafeResolver;
+
+impl Resolve for ProxySsrfSafeResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        Box::pin(async move {
+            let addrs: Vec<std::net::SocketAddr> =
+                tokio::net::lookup_host(format!("{}:0", name.as_str()))
+                    .await
+                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?
+                    .collect();
+
+            // Filter out any private or internal IP addresses
+            let validated: Vec<std::net::SocketAddr> = addrs
+                .into_iter()
+                .filter(|a| orbflow_core::ssrf::is_private_ip(&a.ip(), false).is_none())
+                .collect();
+
+            if validated.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "all resolved addresses are private/internal (SSRF protection)",
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+            Ok(Box::new(validated.into_iter()) as Addrs)
+        })
+    }
+}
 
 /// Executes capability requests by injecting credentials into HTTP calls.
 ///
@@ -31,9 +62,15 @@ pub struct CredentialProxy {
 impl CredentialProxy {
     /// Creates a new proxy backed by the given credential store.
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
+        let http_client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none()) // Prevent redirect bypasses
+            .dns_resolver(Arc::new(ProxySsrfSafeResolver))
+            .build()
+            .expect("Failed to build secure reqwest Client");
+
         Self {
             cred_store,
-            http_client: reqwest::Client::new(),
+            http_client,
         }
     }
 
