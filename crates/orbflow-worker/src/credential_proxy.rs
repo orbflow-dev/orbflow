@@ -11,11 +11,45 @@
 //! and returns a sanitized [`CapabilityResponse`].
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::Arc;
+
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
+
+use reqwest::Url;
 
 use orbflow_core::OrbflowError;
 use orbflow_core::credential_proxy::{CapabilityRequest, CapabilityResponse};
 use orbflow_core::ports::CredentialStore;
+use orbflow_core::ssrf::{BLOCKED_HOSTNAMES, is_private_ip};
+
+/// Custom DNS resolver that validates each resolved IP against [`is_private_ip`]
+/// before allowing the connection. Localhost is allowed for development.
+struct ProxySsrfSafeResolver;
+
+impl Resolve for ProxySsrfSafeResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        Box::pin(async move {
+            let addrs: Vec<std::net::SocketAddr> =
+                tokio::net::lookup_host(format!("{}:0", name.as_str()))
+                    .await
+                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?
+                    .collect();
+            let validated: Vec<std::net::SocketAddr> = addrs
+                .into_iter()
+                .filter(|a| is_private_ip(&a.ip(), true).is_none())
+                .collect();
+            if validated.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "all resolved addresses are private/internal (SSRF protection)",
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+            Ok(Box::new(validated.into_iter()) as Addrs)
+        })
+    }
+}
 
 /// Executes capability requests by injecting credentials into HTTP calls.
 ///
@@ -31,9 +65,15 @@ pub struct CredentialProxy {
 impl CredentialProxy {
     /// Creates a new proxy backed by the given credential store.
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
+        let http_client = reqwest::Client::builder()
+            .dns_resolver(Arc::new(ProxySsrfSafeResolver))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("failed to build credential proxy HTTP client");
+
         Self {
             cred_store,
-            http_client: reqwest::Client::new(),
+            http_client,
         }
     }
 
@@ -149,29 +189,43 @@ impl CredentialProxy {
 ///
 /// Enforces HTTPS (except localhost for development) and blocks
 /// known cloud metadata endpoints.
-fn validate_proxy_url(url: &str) -> Result<(), OrbflowError> {
-    // Must be HTTPS (except localhost for dev)
-    if !url.starts_with("https://") {
-        let is_localhost =
-            url.starts_with("http://localhost") || url.starts_with("http://127.0.0.1");
-        if !is_localhost {
-            return Err(OrbflowError::InvalidNodeConfig(
-                "credential proxy only allows HTTPS URLs (or localhost for development)".into(),
-            ));
-        }
+fn validate_proxy_url(url_str: &str) -> Result<(), OrbflowError> {
+    let parsed = Url::parse(url_str)
+        .map_err(|_| OrbflowError::InvalidNodeConfig(format!("invalid proxy URL: {url_str}")))?;
+
+    let is_localhost =
+        url_str.starts_with("http://localhost") || url_str.starts_with("http://127.0.0.1");
+
+    if !is_localhost && parsed.scheme() != "https" {
+        return Err(OrbflowError::InvalidNodeConfig(
+            "credential proxy only allows HTTPS URLs (or localhost for development)".into(),
+        ));
     }
-    // Block cloud metadata endpoints
-    let blocked = [
-        "169.254.169.254",
-        "metadata.google.internal",
-        "100.100.100.200",
-    ];
-    for b in blocked {
-        if url.contains(b) {
+
+    let host = parsed.host_str().filter(|h| !h.is_empty()).ok_or_else(|| {
+        OrbflowError::InvalidNodeConfig(format!("proxy URL has no host: {url_str}"))
+    })?;
+
+    let lower = host.to_lowercase();
+    if BLOCKED_HOSTNAMES.contains(&lower.as_str()) {
+        return Err(OrbflowError::InvalidNodeConfig(
+            "credential proxy blocked request to internal address".into(),
+        ));
+    }
+
+    let ip = match parsed.host() {
+        Some(url::Host::Ipv4(v4)) => Some(IpAddr::V4(v4)),
+        Some(url::Host::Ipv6(v6)) => Some(IpAddr::V6(v6)),
+        _ => None,
+    };
+
+    if let Some(ip) = ip {
+        if let Some(reason) = is_private_ip(&ip, true) {
             return Err(OrbflowError::InvalidNodeConfig(format!(
-                "credential proxy blocked request to internal address: {b}"
+                "credential proxy URL points to {reason}: {host}"
             )));
         }
     }
+
     Ok(())
 }
