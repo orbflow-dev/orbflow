@@ -17,9 +17,7 @@ use orbflow_core::workflow::{
 };
 use orbflow_memstore::MemStore;
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 fn test_workflow(id: &str) -> Workflow {
     Workflow {
@@ -100,9 +98,7 @@ fn make_comment(id: &str, author: &str, body: &str) -> ReviewComment {
     }
 }
 
-// ===========================================================================
 // Change Request Lifecycle Tests
-// ===========================================================================
 
 #[tokio::test]
 async fn test_change_request_full_lifecycle() {

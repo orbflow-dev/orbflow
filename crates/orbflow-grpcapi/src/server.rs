@@ -21,9 +21,7 @@ use orbflow_core::ports::Engine;
 
 use crate::types;
 
-// ---------------------------------------------------------------------------
 // Request / Response types (JSON wire format, matches Go grpcapi/types.go)
-// ---------------------------------------------------------------------------
 
 // These wire-format structs document the JSON contract even though request
 // dispatch currently deserializes through `serde_json::Value` to support
@@ -115,9 +113,7 @@ struct RpcError {
 const MAX_RPC_FRAME_BYTES: usize = 1 << 20;
 const RPC_READ_DEADLINE: Duration = Duration::from_secs(30);
 
-// ---------------------------------------------------------------------------
 // GrpcServer
-// ---------------------------------------------------------------------------
 
 /// The Orbflow JSON-RPC TCP server wrapping an Engine.
 ///
@@ -590,9 +586,7 @@ async fn handle_cancel_instance(engine: &Arc<dyn Engine>, body: &serde_json::Val
     }
 }
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 fn ok_response(data: serde_json::Value) -> RpcResponse {
     RpcResponse {

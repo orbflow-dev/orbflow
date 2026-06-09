@@ -21,9 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::credential::CredentialId;
 use crate::error::OrbflowError;
 
-// ---------------------------------------------------------------------------
 // Access tier
-// ---------------------------------------------------------------------------
 
 /// Determines how a credential is shared with plugins/MCP servers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -140,9 +138,7 @@ impl From<CredentialExecutionError> for OrbflowError {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Capability request / response
-// ---------------------------------------------------------------------------
 
 /// A request from a plugin/MCP server to make an authenticated HTTP call
 /// without seeing the credential.
@@ -193,9 +189,7 @@ pub struct CapabilityResponse {
     pub error: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
 // Credential policy
-// ---------------------------------------------------------------------------
 
 /// Per-credential policy controlling how it can be used via the proxy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -242,7 +236,7 @@ impl CredentialPolicy {
             return true;
         }
 
-        // Use url::Url for robust host extraction — handles IPv6 literals,
+        // Use url::Url for host extraction — handles IPv6 literals,
         // percent-encoding, userinfo, and unusual-but-valid URL forms.
         let host = url::Url::parse(url)
             .ok()
@@ -284,9 +278,7 @@ pub fn resolve_credential_execution_mode(
     Ok(mode)
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

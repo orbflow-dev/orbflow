@@ -18,7 +18,6 @@ export function useExecutionLifecycle(): UseExecutionLifecycleReturn {
   const toast = useToastStore();
   const execOverlay = useExecutionOverlayStore();
 
-  // Poll for execution updates
   useExecutionPolling({
     instanceId: execOverlay.activeInstanceId,
     enabled: execOverlay.isLive,

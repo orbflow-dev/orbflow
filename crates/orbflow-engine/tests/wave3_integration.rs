@@ -27,9 +27,7 @@ use orbflow_engine::OrbflowEngine;
 use orbflow_memstore::MemStore;
 use orbflow_testutil::MockBus;
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 fn make_node(id: &str, plugin_ref: &str, kind: NodeKind) -> Node {
     Node {
@@ -243,9 +241,7 @@ async fn test_raw_credential_dispatch_requires_explicit_raw_policy() {
     );
 }
 
-// ===========================================================================
 // RBAC Tests
-// ===========================================================================
 
 #[tokio::test]
 async fn test_rbac_check_permission_denies_without_execute() {
@@ -429,9 +425,7 @@ async fn test_rbac_effective_permissions_aggregation() {
     assert!(!perms.contains(&Permission::Delete));
 }
 
-// ===========================================================================
 // Auto-Versioning Tests
-// ===========================================================================
 
 #[tokio::test]
 async fn test_update_workflow_creates_version_snapshot() {
@@ -625,9 +619,7 @@ async fn test_version_snapshot_preserves_old_definition() {
     assert_eq!(current.version, 2);
 }
 
-// ===========================================================================
 // Engine with RBAC + Versioning Combined
-// ===========================================================================
 
 #[tokio::test]
 async fn test_engine_with_rbac_and_versioning_combined() {
@@ -675,9 +667,7 @@ async fn test_engine_with_rbac_and_versioning_combined() {
     assert_eq!(versions[0].version, 1);
 }
 
-// ===========================================================================
 // Missing Credential Tests
-// ===========================================================================
 
 #[tokio::test]
 async fn test_missing_credential_marks_instance_failed() {

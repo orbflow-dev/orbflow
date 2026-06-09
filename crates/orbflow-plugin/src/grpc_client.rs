@@ -171,9 +171,7 @@ impl NodeExecutor for GrpcPluginExecutor {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Conversion helpers
-// ---------------------------------------------------------------------------
 
 /// Converts a [`NodeInput`] into a protobuf [`ExecuteRequest`].
 fn node_input_to_proto(input: &NodeInput) -> Result<ProtoExecuteRequest, OrbflowError> {
@@ -269,9 +267,7 @@ fn non_empty(s: String) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

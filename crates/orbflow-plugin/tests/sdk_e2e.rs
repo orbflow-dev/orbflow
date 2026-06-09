@@ -112,9 +112,7 @@ run(plugin_cls, host='127.0.0.1', port={port})
     panic!("Plugin did not become ready within 6 seconds (port {port})");
 }
 
-// ---------------------------------------------------------------------------
 // UUID Generator plugin tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn uuid_gen_execute() {

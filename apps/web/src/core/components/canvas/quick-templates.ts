@@ -27,17 +27,13 @@ export interface QuickTemplate {
   inputMappings?: Record<string, Record<string, StaticMapping>>;
 }
 
-// ---------------------------------------------------------------------------
 // Helper to create a static mapping
-// ---------------------------------------------------------------------------
 function staticField(key: string, value: unknown): StaticMapping {
   return { targetKey: key, mode: "static", staticValue: value };
 }
 
-// ---------------------------------------------------------------------------
 // 1. API Integration
 //    Manual Trigger -> HTTP Request (GET public API) -> Log the response
-// ---------------------------------------------------------------------------
 export const QUICK_TEMPLATES: QuickTemplate[] = [
   {
     id: "api-chain",
@@ -109,10 +105,8 @@ export const QUICK_TEMPLATES: QuickTemplate[] = [
     },
   },
 
-  // ---------------------------------------------------------------------------
   // 2. Scheduled Task
   //    Manual Trigger -> Wait 3s -> HTTP GET -> Log
-  // ---------------------------------------------------------------------------
   {
     id: "scheduled",
     name: "Scheduled Task",
@@ -201,10 +195,8 @@ export const QUICK_TEMPLATES: QuickTemplate[] = [
     },
   },
 
-  // ---------------------------------------------------------------------------
   // 3. Data Pipeline
   //    Manual Trigger -> Fetch users -> Transform (extract names) -> Log result
-  // ---------------------------------------------------------------------------
   {
     id: "pipeline",
     name: "Data Pipeline",
@@ -298,10 +290,8 @@ export const QUICK_TEMPLATES: QuickTemplate[] = [
     },
   },
 
-  // ---------------------------------------------------------------------------
   // 4. Parallel Processing
   //    Manual Trigger -> (Post 1 | Post 2) -> Collect results
-  // ---------------------------------------------------------------------------
   {
     id: "parallel",
     name: "Parallel Processing",

@@ -16,9 +16,7 @@ import type { StatusTheme } from "./constants";
 import { topoSortIds, topoSortNodes } from "./workflow-graph";
 import type { Workflow, WorkflowNode, WorkflowEdge } from "../types/api";
 
-// ---------------------------------------------------------------------------
 // Helpers to build minimal Workflow fixtures
-// ---------------------------------------------------------------------------
 
 function makeNode(id: string): WorkflowNode {
   return {
@@ -50,9 +48,7 @@ function makeWorkflow(
   };
 }
 
-// ---------------------------------------------------------------------------
 // Constants & lookup tables
-// ---------------------------------------------------------------------------
 
 const ALL_STATUSES: ExecutionStatus[] = [
   "pending",
@@ -194,9 +190,7 @@ describe("SEGMENT_ORDER", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // formatDurationMs
-// ---------------------------------------------------------------------------
 
 describe("formatDurationMs", () => {
   it("returns '<1s' for 0 ms", () => {
@@ -238,9 +232,7 @@ describe("formatDurationMs", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // formatDurationRange
-// ---------------------------------------------------------------------------
 
 describe("formatDurationRange", () => {
   const base = "2025-06-01T12:00:00Z";
@@ -282,9 +274,7 @@ describe("formatDurationRange", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // topoSortIds
-// ---------------------------------------------------------------------------
 
 describe("topoSortIds", () => {
   it("returns empty array for empty workflow", () => {
@@ -396,9 +386,7 @@ describe("topoSortIds", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // topoSortNodes
-// ---------------------------------------------------------------------------
 
 describe("topoSortNodes", () => {
   it("returns empty array for empty workflow", () => {

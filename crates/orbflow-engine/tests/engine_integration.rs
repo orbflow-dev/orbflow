@@ -24,9 +24,7 @@ use orbflow_core::{Instance, InstanceId, InstanceStatus, OrbflowError, task_subj
 use orbflow_engine::OrbflowEngine;
 use orbflow_testutil::{MockBus, MockNodeExecutor, MockStore};
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 /// Builds a minimal [`Node`] for use in test workflows.
 fn make_node(id: &str, plugin_ref: &str, kind: NodeKind) -> Node {
@@ -386,9 +384,7 @@ impl AtomicInstanceCreator for FailingStartEventStore {
 
 impl Store for FailingStartEventStore {}
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 /// Create a workflow and start it; verify the returned instance has Running status
 /// and is persisted in the store.

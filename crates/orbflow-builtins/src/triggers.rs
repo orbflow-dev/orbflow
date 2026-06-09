@@ -21,9 +21,7 @@ use orbflow_core::workflow::NodeKind;
 
 use crate::util::{make_output, resolve_config, string_val};
 
-// ---------------------------------------------------------------------------
 // TriggerManual
-// ---------------------------------------------------------------------------
 
 /// Manual trigger — the workflow is started explicitly by a user or API call.
 pub struct TriggerManual;
@@ -72,9 +70,7 @@ impl NodeExecutor for TriggerManual {
     }
 }
 
-// ---------------------------------------------------------------------------
 // TriggerCron
-// ---------------------------------------------------------------------------
 
 /// Schedule-based trigger — runs on a cron schedule.
 pub struct TriggerCron;
@@ -147,9 +143,7 @@ impl NodeExecutor for TriggerCron {
     }
 }
 
-// ---------------------------------------------------------------------------
 // TriggerWebhook
-// ---------------------------------------------------------------------------
 
 /// Webhook trigger — runs when an HTTP request arrives at the webhook endpoint.
 pub struct TriggerWebhook;
@@ -263,9 +257,7 @@ impl NodeExecutor for TriggerWebhook {
     }
 }
 
-// ---------------------------------------------------------------------------
 // TriggerEvent
-// ---------------------------------------------------------------------------
 
 /// Event trigger — runs when a named event is published.
 pub struct TriggerEvent;

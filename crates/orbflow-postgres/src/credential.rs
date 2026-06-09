@@ -45,9 +45,7 @@ struct CredentialSummaryRow {
     updated_at: DateTime<Utc>,
 }
 
-// ---------------------------------------------------------------------------
 // Tier conversion helpers
-// ---------------------------------------------------------------------------
 
 /// Parse a string access tier to the enum, defaulting to Proxy.
 fn parse_access_tier(s: &str) -> CredentialAccessTier {

@@ -22,9 +22,7 @@ use orbflow_core::ports::{AnalyticsStore, BudgetStore};
 use orbflow_engine::AlertEvaluator;
 use orbflow_engine::budget::check_budget_before_start;
 
-// ---------------------------------------------------------------------------
 // Mock BudgetStore
-// ---------------------------------------------------------------------------
 
 struct MockBudgetStore {
     budget: Option<AccountBudget>,
@@ -58,9 +56,7 @@ impl BudgetStore for MockBudgetStore {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Mock AnalyticsStore
-// ---------------------------------------------------------------------------
 
 struct MockAnalyticsStore {
     stats: ExecutionStats,
@@ -104,9 +100,7 @@ impl AnalyticsStore for MockAnalyticsStore {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 fn make_budget(limit_usd: f64, current_usd: f64) -> AccountBudget {
     AccountBudget {
@@ -148,9 +142,7 @@ fn make_time_range() -> TimeRange {
     }
 }
 
-// ===========================================================================
 // Budget Enforcement Tests
-// ===========================================================================
 
 #[tokio::test]
 async fn test_budget_blocks_workflow_when_exceeded() {
@@ -211,9 +203,7 @@ async fn test_budget_error_message_includes_amounts() {
     );
 }
 
-// ===========================================================================
 // Alert Rule Evaluation Tests (cross-crate: orbflow-engine AlertEvaluator + orbflow-core AlertRule)
-// ===========================================================================
 
 #[tokio::test]
 async fn test_alert_evaluator_triggers_on_high_failure_rate() {
@@ -356,10 +346,8 @@ async fn test_alert_evaluator_zero_executions_does_not_panic() {
     );
 }
 
-// ===========================================================================
 // Alert Rule Direct Evaluation (cross-crate: ensures orbflow-core types work
 // correctly when used from orbflow-engine integration test context)
-// ===========================================================================
 
 #[tokio::test]
 async fn test_alert_rule_evaluates_correctly() {
@@ -421,10 +409,8 @@ async fn test_alert_rule_equals_operator() {
     assert!(!rule.evaluate(42.1), "42.1 != 42 should not trigger");
 }
 
-// ===========================================================================
 // Analytics Time Range Parsing (integration-level: validates the pattern
 // used in orbflow-httpapi handlers works correctly with chrono)
-// ===========================================================================
 
 #[test]
 fn test_analytics_time_range_7d_parses_to_7_days_ago() {
@@ -469,10 +455,8 @@ fn test_analytics_time_range_invalid_format_rejected() {
     assert!(parse_time_range_result("8761h").is_err());
 }
 
-// ---------------------------------------------------------------------------
 // Local reimplementation of parse_time_range for testing (the httpapi version
 // is crate-private). This validates the same logic used in production.
-// ---------------------------------------------------------------------------
 
 fn parse_time_range_result(range: &str) -> Result<TimeRange, String> {
     let now = Utc::now();

@@ -144,9 +144,7 @@ pub struct CoverageReport {
     pub untested_nodes: Vec<String>,
 }
 
-// ---------------------------------------------------------------------------
 // Test helpers
-// ---------------------------------------------------------------------------
 
 /// Converts the flat `input_overrides` map into the nested structure expected
 /// by [`Engine::test_node`].
@@ -174,9 +172,7 @@ pub fn build_test_cached_outputs(
         .collect()
 }
 
-// ---------------------------------------------------------------------------
 // Assertion evaluation
-// ---------------------------------------------------------------------------
 
 /// Navigate a dot-separated field path into a JSON value tree.
 fn resolve_field_path(output: &HashMap<String, Value>, path: &str) -> Option<Value> {

@@ -265,9 +265,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    // -----------------------------------------------------------------------
     // CredentialId
-    // -----------------------------------------------------------------------
 
     #[test]
     fn credential_id_new_from_str() {
@@ -363,9 +361,7 @@ mod tests {
         assert_eq!(back.0, "plain");
     }
 
-    // -----------------------------------------------------------------------
     // Credential
-    // -----------------------------------------------------------------------
 
     fn sample_credential() -> Credential {
         let now = Utc::now();
@@ -475,9 +471,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // CreateCredentialRequest
-    // -----------------------------------------------------------------------
 
     fn sample_create_request() -> CreateCredentialRequest {
         CreateCredentialRequest {
@@ -592,9 +586,7 @@ mod tests {
         assert!(req.policy.is_none());
     }
 
-    // -----------------------------------------------------------------------
     // CredentialSummary
-    // -----------------------------------------------------------------------
 
     #[test]
     fn credential_summary_from_credential() {
@@ -647,9 +639,7 @@ mod tests {
         assert!(val.get("description").is_none());
     }
 
-    // -----------------------------------------------------------------------
     // CredentialTypeSchema & CredentialField
-    // -----------------------------------------------------------------------
 
     #[test]
     fn credential_type_schema_serde_roundtrip() {
@@ -770,9 +760,7 @@ mod tests {
         assert!(val.get("default").is_none());
     }
 
-    // -----------------------------------------------------------------------
     // Edge cases
-    // -----------------------------------------------------------------------
 
     #[test]
     fn credential_with_unicode_name() {

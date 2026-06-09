@@ -15,9 +15,7 @@ use orbflow_core::compliance::{
     ComplianceExporter, ComplianceFormat, HipaaExporter, PciExporter, Soc2Exporter, exporter_for,
 };
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 fn make_event_json(event_type: &str, instance_id: &str, seq: usize) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
@@ -52,9 +50,7 @@ fn make_chain(n: usize) -> Vec<AuditRecord> {
     records
 }
 
-// ===========================================================================
 // Hash Chain Tampering Detection
-// ===========================================================================
 
 #[test]
 fn test_hash_chain_detects_data_tampering() {
@@ -134,9 +130,7 @@ fn test_hash_chain_single_record_valid() {
     assert!(verify_chain(&chain).is_ok());
 }
 
-// ===========================================================================
 // Merkle Tree End-to-End Proofs
-// ===========================================================================
 
 #[test]
 fn test_merkle_proof_end_to_end_8_leaves() {
@@ -227,9 +221,7 @@ fn test_merkle_tree_from_audit_chain() {
     }
 }
 
-// ===========================================================================
 // Compliance Export Format Verification
-// ===========================================================================
 
 #[test]
 fn test_compliance_export_soc2_format() {
@@ -348,9 +340,7 @@ fn test_compliance_export_tampered_record_shows_invalid() {
     );
 }
 
-// ===========================================================================
 // Ed25519 Signatures + Audit Chain Integration
-// ===========================================================================
 
 #[test]
 fn test_ed25519_sign_verify_with_audit_chain() {
@@ -439,9 +429,7 @@ fn test_ed25519_sign_all_chain_records_and_verify_integrity() {
     }
 }
 
-// ===========================================================================
 // Merkle + Signatures + Chain Combined (full audit pipeline)
-// ===========================================================================
 
 #[test]
 fn test_full_audit_pipeline_chain_merkle_signatures() {

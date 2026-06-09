@@ -21,9 +21,7 @@ use orbflow_memstore::MemStore;
 use parking_lot::RwLock;
 use tower::ServiceExt;
 
-// ---------------------------------------------------------------------------
 // Minimal MockEngine — only the Engine methods exercised by the tested routes.
-// ---------------------------------------------------------------------------
 
 struct MockEngine {
     workflows: RwLock<Vec<Workflow>>,
@@ -149,9 +147,7 @@ impl Engine for MockEngine {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 fn test_router() -> axum::Router {
     let engine: Arc<dyn Engine> = Arc::new(MockEngine::new());
@@ -282,9 +278,7 @@ async fn create_change_request_as(
         .to_string()
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn health_check_returns_200() {

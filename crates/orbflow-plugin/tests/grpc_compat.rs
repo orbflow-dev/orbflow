@@ -32,9 +32,7 @@ mod proto {
     pub use orbflow_plugin::grpc_proto::*;
 }
 
-// ---------------------------------------------------------------------------
 // Mock plugin server
-// ---------------------------------------------------------------------------
 
 /// A minimal OrbflowPlugin gRPC server for testing.
 struct MockPluginServer;
@@ -154,9 +152,7 @@ async fn start_mock_server() -> SocketAddr {
     addr
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn execute_round_trip() {

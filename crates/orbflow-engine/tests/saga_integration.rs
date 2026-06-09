@@ -28,9 +28,7 @@ use orbflow_core::{OrbflowError, task_subject};
 use orbflow_engine::OrbflowEngine;
 use orbflow_testutil::{MockBus, MockNodeExecutor, MockStore};
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 fn make_node(id: &str, plugin_ref: &str, kind: NodeKind) -> Node {
     Node {
@@ -198,9 +196,7 @@ where
     }
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 /// Saga: upstream node A (with compensate) completes, downstream B fails.
 /// Engine must:
