@@ -14,6 +14,7 @@ use orbflow_core::credential_proxy::{CredentialAccessTier, CredentialPolicy};
 use orbflow_core::crypto;
 use orbflow_core::error::OrbflowError;
 use orbflow_core::ports::CredentialStore;
+use zeroize::Zeroizing;
 
 use crate::store::PgStore;
 
@@ -118,7 +119,10 @@ impl PgStore {
         encrypted: &[u8],
     ) -> Result<HashMap<String, serde_json::Value>, OrbflowError> {
         let key = self.encryption_key()?;
-        let plaintext = crypto::decrypt(key, encrypted)?;
+        // Zeroizes the JSON-serialized blob buffer only. The downstream
+        // serde_json::Value HashMap in Credential.data and the AES key are NOT
+        // zeroized. Full secret-path zeroization is tracked as T-14.
+        let plaintext = Zeroizing::new(crypto::decrypt(key, encrypted)?);
         serde_json::from_slice(&plaintext)
             .map_err(|e| OrbflowError::Database(format!("deserialize credential data: {e}")))
     }

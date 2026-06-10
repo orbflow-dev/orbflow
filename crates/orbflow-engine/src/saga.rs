@@ -162,14 +162,14 @@ async fn dispatch_pending_compensations(
         return Ok(());
     }
 
-    if let Some(node_id) = pending_nodes.first() {
-        if let Err(e) = dispatch_compensation(engine, inst, wf, node_id).await {
-            error!(
-                node = node_id.as_str(),
-                error = %e,
-                "saga: compensation dispatch failed; leaving node pending for recovery"
-            );
-        }
+    if let Some(node_id) = pending_nodes.first()
+        && let Err(e) = dispatch_compensation(engine, inst, wf, node_id).await
+    {
+        error!(
+            node = node_id.as_str(),
+            error = %e,
+            "saga: compensation dispatch failed; leaving node pending for recovery"
+        );
     }
 
     Ok(())

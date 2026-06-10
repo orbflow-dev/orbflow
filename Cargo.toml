@@ -75,6 +75,7 @@ md-5 = "0.10"
 base64 = "0.22"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 subtle = "2"
+zeroize = "1"
 
 # OpenTelemetry
 opentelemetry = { version = "0.31", features = ["metrics"] }
@@ -104,7 +105,7 @@ dotenvy = "0.15"
 genai = "0.5"
 
 # Email
-lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+lettre = { version = "0.11.22", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
 
 # Template
 tera = "1"

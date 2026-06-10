@@ -517,8 +517,8 @@ async fn setup_rbac(
             )))
         }
         Ok(_) => {
-            tracing::info!(
-                "RBAC not configured (no roles or bindings in database) — all requests allowed"
+            tracing::warn!(
+                "No RBAC policy configured while authentication is disabled — all requests are implicitly authorized. Configure an auth_token and an RBAC policy for production deployments."
             );
             None
         }

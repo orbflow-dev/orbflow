@@ -3,7 +3,10 @@ server:
   port: 8080
 
 grpc:
-  enabled: true
+  # gRPC is opt-in. When enabling, set an auth_token and prefer a
+  # loopback/private bind (e.g. host: "127.0.0.1") to avoid exposing
+  # the unauthenticated gRPC surface to the network.
+  enabled: false
   port: 9090
 
 worker:

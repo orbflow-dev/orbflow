@@ -95,8 +95,13 @@ export function extractContentType(headers: unknown): string | null {
   return null;
 }
 
-/** Block unsafe URL schemes that are XSS vectors (javascript:, data:text/html, etc). */
-const UNSAFE_URL_SCHEMES = ["javascript:", "data:text/html", "data:application/"] as const;
+/**
+ * Block unsafe URL schemes that are XSS vectors. All data: URLs are blocked —
+ * no render path uses isSafeUrl for inline images (isUrl gates links on
+ * ^https?://), so a blanket block closes svg/javascript MIME variants without
+ * affecting previews.
+ */
+const UNSAFE_URL_SCHEMES = ["javascript:", "data:"] as const;
 
 export function isSafeUrl(url: string): boolean {
   // Strip non-printable control characters before checking to prevent XSS bypasses

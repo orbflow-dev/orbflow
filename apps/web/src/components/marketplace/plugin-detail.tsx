@@ -5,6 +5,7 @@ import type { PluginDetail as PluginDetailType } from "@orbflow/core/types";
 import { NodeIcon } from "@/core";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { isSafeUrl } from "@/lib/output-safety";
 
 const CAT_GRADIENT: Record<string, string> = {
   ai: "from-violet-500/20 to-purple-500/10",
@@ -159,8 +160,9 @@ function DetailContent({
           <MetaItem label="Language" value={plugin.language || "—"} />
         </div>
 
-        {/* Repository */}
-        {plugin.repository && (
+        {/* Repository — hidden entirely when the URL fails the scheme gate, so an
+            unsafe value never renders as a styled (dead) link or visible text */}
+        {plugin.repository && isSafeUrl(plugin.repository) && (
           <div>
             <SectionTitle>Repository</SectionTitle>
             <a

@@ -22,6 +22,18 @@ jobs:
       - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          # sqlx 0.8 macros still pull sqlx-mysql transitively, which brings in
-          # rsa 0.9.10 even though this workspace is PostgreSQL-only.
-          ignore: RUSTSEC-2023-0071
+          # RUSTSEC-2023-0071: rsa 0.9.x timing side-channel (Marvin attack).
+          # This advisory enters via sqlx-mysql, which is a transitive dependency
+          # of the sqlx 0.8 macros crate. This workspace is PostgreSQL-only and
+          # never enables the sqlx-mysql feature, so the vulnerable RSA code path
+          # is never compiled into any release binary.
+          # Re-evaluate if a MySQL adapter or the sqlx "mysql" feature is ever added.
+          # Last reviewed: 2026-06-10.
+          #
+          # RUSTSEC-2026-0097: rand 0.8.x unsoundness with a custom global logger.
+          # Enters via transitive deps: tokio-websockets (async-nats), tera, sqlx-postgres.
+          # The unsoundness requires a user-installed custom global logger to trigger;
+          # this server workload does not install a custom rand logger.
+          # Re-evaluate when rand is upgraded to 0.9+ in the dependency tree.
+          # Last reviewed: 2026-06-10.
+          ignore: RUSTSEC-2023-0071 RUSTSEC-2026-0097
