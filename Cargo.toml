@@ -81,7 +81,7 @@ zeroize = "1"
 opentelemetry = { version = "0.31", features = ["metrics"] }
 opentelemetry_sdk = { version = "0.31", features = ["metrics", "trace"] }
 opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic", "metrics", "trace"] }
-tracing-opentelemetry = "0.32"
+tracing-opentelemetry = "0.33"
 
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }
