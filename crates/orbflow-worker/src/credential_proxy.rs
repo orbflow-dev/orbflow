@@ -14,11 +14,11 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use orbflow_core::OrbflowError;
 use orbflow_core::credential_proxy::{CapabilityRequest, CapabilityResponse};
 use orbflow_core::ports::CredentialStore;
 use orbflow_core::ssrf::{BLOCKED_HOSTNAMES, is_private_ip};
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 
 /// A custom DNS resolver that validates resolved IP addresses against SSRF blocklists.
 /// Prevents DNS rebinding and TOCTOU attacks by ensuring the exact IPs the
@@ -40,7 +40,8 @@ impl Resolve for ProxySsrfSafeResolver {
                             "credential proxy blocked DNS resolution to {reason} ({})",
                             addr.ip()
                         ),
-                    )) as Box<dyn std::error::Error + Send + Sync>);
+                    ))
+                        as Box<dyn std::error::Error + Send + Sync>);
                 }
                 safe_addrs.push(addr);
             }
@@ -48,7 +49,8 @@ impl Resolve for ProxySsrfSafeResolver {
                 return Err(Box::new(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     "No addresses found",
-                )) as Box<dyn std::error::Error + Send + Sync>);
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
             }
             let addrs_iter: Addrs = Box::new(safe_addrs.into_iter());
             Ok(addrs_iter)
