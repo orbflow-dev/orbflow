@@ -14,10 +14,62 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
+
 use orbflow_core::OrbflowError;
 use orbflow_core::credential_proxy::{CapabilityRequest, CapabilityResponse};
 use orbflow_core::ports::CredentialStore;
 use orbflow_core::ssrf::{BLOCKED_HOSTNAMES, is_private_ip};
+
+/// A custom DNS resolver that validates resolved IPs against SSRF blocklists.
+/// This prevents TOCTOU (DNS rebinding) attacks where an attacker serves a
+/// benign IP during validation and a malicious internal IP during the request.
+struct ProxySsrfSafeResolver;
+
+impl Resolve for ProxySsrfSafeResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        Box::pin(async move {
+            let host = name.as_str();
+            let mut addrs = vec![];
+
+            // Resolve hostname (using port 0 since we only care about the IP)
+            match tokio::net::lookup_host((host, 0)).await {
+                Ok(resolved) => {
+                    for addr in resolved {
+                        // Check if the resolved IP is private/internal
+                        if let Some(reason) = is_private_ip(&addr.ip(), false) {
+                            return Err(Box::new(std::io::Error::new(
+                                std::io::ErrorKind::PermissionDenied,
+                                format!(
+                                    "DNS rebinding protection: hostname '{}' resolves to blocked {} ({})",
+                                    host,
+                                    reason,
+                                    addr.ip()
+                                ),
+                            ))
+                                as Box<dyn std::error::Error + Send + Sync>);
+                        }
+                        addrs.push(addr);
+                    }
+                }
+                Err(e) => {
+                    return Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>);
+                }
+            }
+
+            if addrs.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "No addresses found",
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+
+            let addrs_iter: Addrs = Box::new(addrs.into_iter());
+            Ok(addrs_iter)
+        })
+    }
+}
 
 /// Executes capability requests by injecting credentials into HTTP calls.
 ///
@@ -33,9 +85,15 @@ pub struct CredentialProxy {
 impl CredentialProxy {
     /// Creates a new proxy backed by the given credential store.
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
+        let http_client = reqwest::Client::builder()
+            .dns_resolver(Arc::new(ProxySsrfSafeResolver))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("Failed to build SSRF-safe reqwest client (failing closed)");
+
         Self {
             cred_store,
-            http_client: reqwest::Client::new(),
+            http_client,
         }
     }
 
