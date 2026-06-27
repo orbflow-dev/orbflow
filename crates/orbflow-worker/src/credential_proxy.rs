@@ -40,8 +40,14 @@ impl Resolve for ProxySsrfSafeResolver {
                         if let Some(reason) = is_private_ip(&addr.ip(), false) {
                             return Err(Box::new(std::io::Error::new(
                                 std::io::ErrorKind::PermissionDenied,
-                                format!("DNS rebinding protection: hostname '{}' resolves to blocked {} ({})", host, reason, addr.ip()),
-                            )) as Box<dyn std::error::Error + Send + Sync>);
+                                format!(
+                                    "DNS rebinding protection: hostname '{}' resolves to blocked {} ({})",
+                                    host,
+                                    reason,
+                                    addr.ip()
+                                ),
+                            ))
+                                as Box<dyn std::error::Error + Send + Sync>);
                         }
                         addrs.push(addr);
                     }
@@ -55,7 +61,8 @@ impl Resolve for ProxySsrfSafeResolver {
                 return Err(Box::new(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     "No addresses found",
-                )) as Box<dyn std::error::Error + Send + Sync>);
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
             }
 
             let addrs_iter: Addrs = Box::new(addrs.into_iter());
