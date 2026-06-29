@@ -18,6 +18,9 @@ use orbflow_core::OrbflowError;
 use orbflow_core::credential_proxy::{CapabilityRequest, CapabilityResponse};
 use orbflow_core::ports::CredentialStore;
 use orbflow_core::ssrf::{BLOCKED_HOSTNAMES, is_private_ip};
+use reqwest::dns::{Addrs, Resolve};
+use reqwest::redirect::Policy;
+use std::net::SocketAddr;
 
 /// Executes capability requests by injecting credentials into HTTP calls.
 ///
@@ -30,12 +33,62 @@ pub struct CredentialProxy {
     http_client: reqwest::Client,
 }
 
+/// A custom DNS resolver that validates resolved IPs against SSRF blocklists.
+struct ProxySsrfSafeResolver;
+
+impl Resolve for ProxySsrfSafeResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let name_str = name.as_str().to_string();
+        Box::pin(async move {
+            // Lookup host requires a port, we just use a dummy port
+            let mut resolved = tokio::net::lookup_host((name_str.as_str(), 0)).await?;
+
+            let mut addrs: Vec<SocketAddr> = Vec::new();
+            for addr in resolved.by_ref() {
+                if let Some(reason) = is_private_ip(&addr.ip(), false) {
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!(
+                            "credential proxy URL hostname '{}' resolves to {} ({})",
+                            name_str,
+                            reason,
+                            addr.ip()
+                        ),
+                    ))
+                        as Box<dyn std::error::Error + Send + Sync>);
+                }
+                addrs.push(addr);
+            }
+
+            if addrs.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!(
+                        "credential proxy URL hostname '{}' resolved no addresses",
+                        name_str
+                    ),
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+
+            let iter: Addrs = Box::new(addrs.into_iter());
+            Ok(iter)
+        })
+    }
+}
+
 impl CredentialProxy {
     /// Creates a new proxy backed by the given credential store.
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
+        let http_client = reqwest::Client::builder()
+            .dns_resolver(Arc::new(ProxySsrfSafeResolver))
+            .redirect(Policy::none())
+            .build()
+            .expect("Failed to build HTTP client for CredentialProxy");
+
         Self {
             cred_store,
-            http_client: reqwest::Client::new(),
+            http_client,
         }
     }
 
