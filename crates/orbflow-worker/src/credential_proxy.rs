@@ -111,12 +111,10 @@ impl CredentialProxy {
             _ => None,
         };
 
-        if let Some(ip) = ip {
-            if let Some(reason) = is_private_ip(&ip, false) {
-                return Err(OrbflowError::InvalidNodeConfig(format!(
-                    "credential proxy blocked request to {reason}: {host}"
-                )));
-            }
+        if let Some(reason) = ip.and_then(|ip| is_private_ip(&ip, false)) {
+            return Err(OrbflowError::InvalidNodeConfig(format!(
+                "credential proxy blocked request to {reason}: {host}"
+            )));
         }
 
         let validated_url = parsed;
