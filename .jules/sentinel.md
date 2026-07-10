@@ -6,3 +6,8 @@
 **Vulnerability:** The `isSafeUrl` function checked for unsafe URL schemes (e.g., `javascript:`, `data:`) by trimming and lowercasing the input, but did not handle non-printable control characters. Attackers could bypass the check by injecting characters like `\x01` or tabs (`\x09`) into the URL scheme (e.g., `java\x09script:alert(1)`), which the browser would ignore and execute as XSS.
 **Learning:** Browsers are highly lenient when parsing URL schemes and will strip out invalid control characters before evaluation. Simple string prefix checks (`startsWith`) are insufficient for validating URLs because they don't account for these obfuscation techniques.
 **Prevention:** Before validating a URL scheme against a blocklist, always sanitize the input by explicitly stripping non-printable control characters (`[\x00-\x1F\x7F-\x9F]`) using a regex.
+
+## 2024-05-01 - [Path Traversal Bypass via Canonicalization Fallback]
+**Vulnerability:** A path containment check using `.starts_with()` was bypassed because the preceding `fs::canonicalize` call used `.unwrap_or_else()` to fall back to the raw, uncanonicalized path if the directory didn't exist. This allowed traversal strings like `/base/../target` to satisfy the `starts_with("/base")` check because `starts_with()` compares path components syntactically if they are not canonicalized.
+**Learning:** `starts_with` must only be used on strictly canonicalized paths for containment checks. If canonicalization fails, the operation MUST fail closed.
+**Prevention:** Never use `.unwrap_or_else()` or `.unwrap_or()` to supply an uncanonicalized path as a fallback. Use strict error handling like `.map_err()` to propagate canonicalization failures.
