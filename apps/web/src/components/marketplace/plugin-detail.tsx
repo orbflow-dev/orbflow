@@ -165,19 +165,28 @@ function DetailContent({
         {plugin.repository && isSafeUrl(plugin.repository) && (
           <div>
             <SectionTitle>Repository</SectionTitle>
-            <a
-              href={plugin.repository}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 text-sm text-electric-indigo
-                hover:text-electric-indigo/80 transition-colors group"
-            >
-              <NodeIcon name="link" className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
-              <span className="truncate underline underline-offset-2 decoration-electric-indigo/30
-                group-hover:decoration-electric-indigo/60">
-                {plugin.repository.replace(/^https?:\/\//, "")}
+            {isSafeUrl(plugin.repository) ? (
+              <a
+                href={plugin.repository}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 text-sm text-electric-indigo
+                  hover:text-electric-indigo/80 transition-colors group"
+              >
+                <NodeIcon name="link" className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
+                <span className="truncate underline underline-offset-2 decoration-electric-indigo/30
+                  group-hover:decoration-electric-indigo/60">
+                  {plugin.repository.replace(/^https?:\/\//, "")}
+                </span>
+              </a>
+            ) : (
+              <span className="inline-flex items-center gap-2 text-sm text-orbflow-text-secondary">
+                <NodeIcon name="link" className="w-3.5 h-3.5" />
+                <span className="truncate">
+                  {plugin.repository.replace(/^https?:\/\//, "")}
+                </span>
               </span>
-            </a>
+            )}
           </div>
         )}
 
