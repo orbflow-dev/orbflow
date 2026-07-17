@@ -221,12 +221,12 @@ async fn validate_proxy_url(url: &str) -> Result<reqwest::Url, OrbflowError> {
         )));
     }
 
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        if let Some(reason) = is_private_ip(&ip, false) {
-            return Err(OrbflowError::InvalidNodeConfig(format!(
-                "credential proxy blocked request to {reason}: {host}"
-            )));
-        }
+    if let Ok(ip) = host.parse::<IpAddr>()
+        && let Some(reason) = is_private_ip(&ip, false)
+    {
+        return Err(OrbflowError::InvalidNodeConfig(format!(
+            "credential proxy blocked request to {reason}: {host}"
+        )));
     }
 
     Ok(parsed)
