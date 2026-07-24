@@ -17,7 +17,7 @@ use std::sync::Arc;
 use orbflow_core::OrbflowError;
 use orbflow_core::credential_proxy::{CapabilityRequest, CapabilityResponse};
 use orbflow_core::ports::CredentialStore;
-use orbflow_core::ssrf::{is_private_ip, BLOCKED_HOSTNAMES};
+use orbflow_core::ssrf::{BLOCKED_HOSTNAMES, is_private_ip};
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 
 /// Executes capability requests by injecting credentials into HTTP calls.
