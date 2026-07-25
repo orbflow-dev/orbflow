@@ -2773,9 +2773,12 @@ pub async fn uninstall_plugin(
             return Err("symlink");
         }
         // Canonicalize and verify it stays within plugins_dir.
+        // Unsafe fallback to uncanonicalized paths using .unwrap_or_else()
+        // allows bypassing the starts_with() check. We must fail securely.
         let canonical_base = std::fs::canonicalize(&plugins_base)
-            .unwrap_or_else(|_| std::path::PathBuf::from(&plugins_base));
-        let canonical_dir = std::fs::canonicalize(&dir_check).unwrap_or_else(|_| dir_check.clone());
+            .map_err(|_| "invalid_base")?;
+        let canonical_dir = std::fs::canonicalize(&dir_check)
+            .map_err(|_| "invalid_dir")?;
         if !canonical_dir.starts_with(&canonical_base) {
             return Err("outside_base");
         }
