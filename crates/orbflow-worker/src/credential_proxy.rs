@@ -18,6 +18,42 @@ use orbflow_core::OrbflowError;
 use orbflow_core::credential_proxy::{CapabilityRequest, CapabilityResponse};
 use orbflow_core::ports::CredentialStore;
 use orbflow_core::ssrf::{BLOCKED_HOSTNAMES, is_private_ip};
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
+
+#[derive(Clone)]
+struct ProxySsrfSafeResolver;
+
+impl Resolve for ProxySsrfSafeResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let name_str = name.as_str().to_string();
+        Box::pin(async move {
+            let resolved = tokio::net::lookup_host((name_str.as_str(), 0))
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            let mut addrs = Vec::new();
+            for addr in resolved {
+                let ip = addr.ip();
+                if let Some(reason) = is_private_ip(&ip, false) {
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!("credential proxy DNS resolution blocked: {reason}"),
+                    ))
+                        as Box<dyn std::error::Error + Send + Sync>);
+                }
+                addrs.push(addr);
+            }
+            if addrs.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "all resolved addresses are private/internal (SSRF protection)",
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+            let iter: Addrs = Box::new(addrs.into_iter());
+            Ok(iter)
+        })
+    }
+}
 
 /// Executes capability requests by injecting credentials into HTTP calls.
 ///
@@ -33,9 +69,15 @@ pub struct CredentialProxy {
 impl CredentialProxy {
     /// Creates a new proxy backed by the given credential store.
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
+        let http_client = reqwest::Client::builder()
+            .dns_resolver(Arc::new(ProxySsrfSafeResolver))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("failed to build secure credential proxy client");
+
         Self {
             cred_store,
-            http_client: reqwest::Client::new(),
+            http_client,
         }
     }
 
