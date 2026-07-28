@@ -38,7 +38,7 @@ impl Resolve for ProxySsrfSafeResolver {
             }
 
             // tokio::net::lookup_host requires a port, use a dummy one
-            let mut resolved = tokio::net::lookup_host((host, 0)).await.map_err(|_| {
+            let resolved = tokio::net::lookup_host((host, 0)).await.map_err(|_| {
                 Box::new(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     format!("credential proxy URL hostname '{host}' could not be resolved"),
@@ -47,7 +47,7 @@ impl Resolve for ProxySsrfSafeResolver {
 
             let mut addrs = Vec::new();
             let mut saw_address = false;
-            while let Some(addr) = resolved.next() {
+            for addr in resolved {
                 saw_address = true;
                 if let Some(reason) = is_private_ip(&addr.ip(), false) {
                     return Err(Box::new(std::io::Error::new(
@@ -244,9 +244,11 @@ async fn validate_proxy_url(url: &str) -> Result<reqwest::Url, OrbflowError> {
     }
 
     if let Ok(ip) = host_str.parse::<IpAddr>() {
-        if let Some(reason) = is_private_ip(&ip, false) {
+        // use an early return without nested if-let to satisfy clippy
+        let reason = is_private_ip(&ip, false);
+        if let Some(r) = reason {
             return Err(OrbflowError::InvalidNodeConfig(format!(
-                "credential proxy blocked request to {reason}: {host_str}"
+                "credential proxy blocked request to {r}: {host_str}"
             )));
         }
     }
