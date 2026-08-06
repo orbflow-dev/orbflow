@@ -19,6 +19,42 @@ use orbflow_core::credential_proxy::{CapabilityRequest, CapabilityResponse};
 use orbflow_core::ports::CredentialStore;
 use orbflow_core::ssrf::{BLOCKED_HOSTNAMES, is_private_ip};
 
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
+
+struct ProxySsrfSafeResolver;
+
+impl Resolve for ProxySsrfSafeResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addrs = tokio::net::lookup_host((host.as_str(), 0))
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+
+            let mut resolved = Vec::new();
+            for addr in addrs {
+                if let Some(reason) = is_private_ip(&addr.ip(), false) {
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!("credential proxy DNS resolver blocked {reason}: {}", addr.ip()),
+                    )) as Box<dyn std::error::Error + Send + Sync>);
+                }
+                resolved.push(addr);
+            }
+
+            if resolved.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "No valid IP addresses found",
+                )) as Box<dyn std::error::Error + Send + Sync>);
+            }
+
+            let iter: Addrs = Box::new(resolved.into_iter());
+            Ok(iter)
+        })
+    }
+}
+
 /// Executes capability requests by injecting credentials into HTTP calls.
 ///
 /// The proxy ensures that plugins and MCP servers never see raw API keys.
@@ -33,9 +69,15 @@ pub struct CredentialProxy {
 impl CredentialProxy {
     /// Creates a new proxy backed by the given credential store.
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
+        let http_client = reqwest::ClientBuilder::new()
+            .dns_resolver(Arc::new(ProxySsrfSafeResolver))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap_or_else(|e| panic!("failed to build credential proxy http client: {e}"));
+
         Self {
             cred_store,
-            http_client: reqwest::Client::new(),
+            http_client,
         }
     }
 
@@ -183,36 +225,12 @@ async fn validate_proxy_url(url: &str) -> Result<reqwest::Url, OrbflowError> {
                 "credential proxy blocked request to {reason}: {host}"
             )));
         }
-        return Ok(parsed);
     }
 
-    let port = parsed
-        .port_or_known_default()
-        .ok_or_else(|| OrbflowError::InvalidNodeConfig("proxy URL has no port".into()))?;
-    let mut resolved = tokio::net::lookup_host((host.as_str(), port))
-        .await
-        .map_err(|_| {
-            OrbflowError::InvalidNodeConfig(format!(
-                "credential proxy URL hostname '{host}' could not be resolved"
-            ))
-        })?;
-
-    let mut saw_address = false;
-    for addr in resolved.by_ref() {
-        saw_address = true;
-        if let Some(reason) = is_private_ip(&addr.ip(), false) {
-            return Err(OrbflowError::InvalidNodeConfig(format!(
-                "credential proxy URL hostname '{host}' resolves to {reason} ({})",
-                addr.ip()
-            )));
-        }
-    }
-
-    if !saw_address {
-        return Err(OrbflowError::InvalidNodeConfig(format!(
-            "credential proxy URL hostname '{host}' resolved no addresses"
-        )));
-    }
+    // Notice: we no longer manually resolve the hostname here to check against is_private_ip.
+    // Instead, the custom ProxySsrfSafeResolver injected into reqwest::Client will perform
+    // the resolution and validation asynchronously at the exact moment the connection is established.
+    // This prevents Time-Of-Check to Time-Of-Use (TOCTOU) DNS rebinding attacks.
 
     Ok(parsed)
 }
