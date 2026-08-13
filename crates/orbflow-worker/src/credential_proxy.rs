@@ -84,10 +84,10 @@ impl CredentialProxy {
                     {
                         return attempt.error("credential proxy: blocked internal host redirect");
                     }
-                    if let Ok(ip) = host.parse::<IpAddr>() {
-                        if is_private_ip(&ip, false).is_some() {
-                            return attempt.error("credential proxy: blocked private IP redirect");
-                        }
+                    if let Ok(ip) = host.parse::<IpAddr>()
+                        && is_private_ip(&ip, false).is_some()
+                    {
+                        return attempt.error("credential proxy: blocked private IP redirect");
                     }
                 }
 
