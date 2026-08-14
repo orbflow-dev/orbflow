@@ -2775,7 +2775,10 @@ pub async fn uninstall_plugin(
         // Canonicalize and verify it stays within plugins_dir.
         let canonical_base = std::fs::canonicalize(&plugins_base)
             .unwrap_or_else(|_| std::path::PathBuf::from(&plugins_base));
-        let canonical_dir = std::fs::canonicalize(&dir_check).unwrap_or_else(|_| dir_check.clone());
+        let canonical_dir = match std::fs::canonicalize(&dir_check) {
+            Ok(p) => p,
+            Err(_) => return Err("canonicalize_dir"),
+        };
         if !canonical_dir.starts_with(&canonical_base) {
             return Err("outside_base");
         }
