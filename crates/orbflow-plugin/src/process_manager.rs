@@ -43,12 +43,20 @@ fn validate_module_name(name: &str) -> bool {
 /// Validates that a resolved path is contained within the plugins directory.
 /// Prevents path traversal attacks via symlinks or `..` components.
 fn validate_path_containment(path: &Path, plugins_dir: &Path) -> Result<(), OrbflowError> {
-    let canon_path = path
-        .canonicalize()
-        .map_err(|e| OrbflowError::Internal(format!("cannot resolve plugin path: {e}")))?;
     let canon_root = plugins_dir
         .canonicalize()
         .map_err(|e| OrbflowError::Internal(format!("cannot resolve plugins dir: {e}")))?;
+    let canon_path = if path.exists() {
+        path.canonicalize()
+            .map_err(|e| OrbflowError::Internal(format!("cannot resolve plugin path: {e}")))?
+    } else if let Some(parent) = path.parent() {
+        let cp = parent.canonicalize().map_err(|e| {
+            OrbflowError::Internal(format!("cannot resolve plugin path parent: {e}"))
+        })?;
+        cp.join(path.file_name().unwrap_or_default())
+    } else {
+        return Err(OrbflowError::Internal("plugin path has no parent".into()));
+    };
     if !canon_path.starts_with(&canon_root) {
         return Err(OrbflowError::Internal(
             "plugin path escapes plugins directory".into(),
