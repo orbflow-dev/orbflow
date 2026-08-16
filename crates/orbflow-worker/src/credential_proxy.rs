@@ -33,9 +33,14 @@ pub struct CredentialProxy {
 impl CredentialProxy {
     /// Creates a new proxy backed by the given credential store.
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
+        let http_client = reqwest::ClientBuilder::new()
+            .dns_resolver(Arc::new(ProxySsrfSafeResolver))
+            .build()
+            .expect("credential proxy failed to build secure HTTP client");
+
         Self {
             cred_store,
-            http_client: reqwest::Client::new(),
+            http_client,
         }
     }
 
@@ -215,4 +220,40 @@ async fn validate_proxy_url(url: &str) -> Result<reqwest::Url, OrbflowError> {
     }
 
     Ok(parsed)
+}
+
+/// Custom DNS resolver for reqwest that checks all resolved IP addresses
+/// against the SSRF blocklist before allowing the connection to proceed.
+#[derive(Clone)]
+struct ProxySsrfSafeResolver;
+
+impl reqwest::dns::Resolve for ProxySsrfSafeResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let name_str = name.as_str().to_string();
+        Box::pin(async move {
+            // lookup_host requires a port, we append a dummy port 0
+            let resolved = tokio::net::lookup_host((name_str.as_str(), 0)).await?;
+
+            let mut addrs: Vec<std::net::SocketAddr> = Vec::new();
+            for addr in resolved {
+                // Check if the resolved IP is private/internal
+                if let Some(reason) = is_private_ip(&addr.ip(), false) {
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!(
+                            "credential proxy DNS resolution blocked: {} resolves to {} ({})",
+                            name_str,
+                            reason,
+                            addr.ip()
+                        ),
+                    ))
+                        as Box<dyn std::error::Error + Send + Sync>);
+                }
+                addrs.push(addr);
+            }
+
+            let iter: reqwest::dns::Addrs = Box::new(addrs.into_iter());
+            Ok(iter)
+        })
+    }
 }
