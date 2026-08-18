@@ -14,10 +14,62 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
+
 use orbflow_core::OrbflowError;
 use orbflow_core::credential_proxy::{CapabilityRequest, CapabilityResponse};
 use orbflow_core::ports::CredentialStore;
 use orbflow_core::ssrf::{BLOCKED_HOSTNAMES, is_private_ip};
+
+/// Custom DNS resolver that validates each resolved IP against `is_private_ip`
+/// before allowing the connection, closing the TOCTOU gap between the pre-flight
+/// SSRF check and reqwest's own DNS resolution.
+struct ProxySsrfSafeResolver;
+
+impl Resolve for ProxySsrfSafeResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        Box::pin(async move {
+            let addrs: Vec<std::net::SocketAddr> =
+                tokio::net::lookup_host(format!("{}:0", name.as_str()))
+                    .await
+                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?
+                    .collect();
+            let validated: Vec<std::net::SocketAddr> = addrs
+                .into_iter()
+                .filter(|a| is_private_ip(&a.ip(), false).is_none())
+                .collect();
+            if validated.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "all resolved addresses are private/internal (SSRF protection)",
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+            Ok(Box::new(validated.into_iter()) as Addrs)
+        })
+    }
+}
+
+/// Redirect policy that validates each redirect hop against SSRF protections.
+fn proxy_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() > 10 {
+            return attempt.error("credential proxy: too many redirects");
+        }
+
+        let redirect_url = attempt.url().as_str().to_string();
+        let is_safe = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(async { validate_proxy_url(&redirect_url).await.is_ok() })
+        });
+
+        if is_safe {
+            attempt.follow()
+        } else {
+            attempt.error("credential proxy: redirect target rejected by SSRF policy")
+        }
+    })
+}
 
 /// Executes capability requests by injecting credentials into HTTP calls.
 ///
@@ -33,9 +85,15 @@ pub struct CredentialProxy {
 impl CredentialProxy {
     /// Creates a new proxy backed by the given credential store.
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
+        let http_client = reqwest::Client::builder()
+            .dns_resolver(Arc::new(ProxySsrfSafeResolver))
+            .redirect(proxy_redirect_policy())
+            .build()
+            .expect("failed to build secure credential proxy HTTP client");
+
         Self {
             cred_store,
-            http_client: reqwest::Client::new(),
+            http_client,
         }
     }
 
