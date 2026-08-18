@@ -740,7 +740,7 @@ mod tests {
 
     // ─── Test: streaming chunks relayed ─────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_streaming_chunks_relayed() {
         let bus = Arc::new(MockBus::new());
         let mut data = HashMap::new();
@@ -810,7 +810,7 @@ mod tests {
 
     // ─── Test: streaming error terminates ───────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_streaming_error_terminates() {
         let bus = Arc::new(MockBus::new());
 
@@ -864,7 +864,7 @@ mod tests {
 
     // ─── Test: non-streaming still works ────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_non_streaming_still_works() {
         let bus = Arc::new(MockBus::new());
 
