@@ -278,6 +278,7 @@ struct RateLimitBody {
     error: String,
 }
 
+#[allow(clippy::result_large_err)]
 /// Extracts and validates a workflow ID from the path, then checks rate limit.
 pub async fn check_start_rate_limit(
     limiter: &StartRateLimiter,
