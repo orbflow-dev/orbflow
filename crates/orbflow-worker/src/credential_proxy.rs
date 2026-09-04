@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 
+use crate::ssrf::ProxySsrfSafeResolver;
 use orbflow_core::OrbflowError;
 use orbflow_core::credential_proxy::{CapabilityRequest, CapabilityResponse};
 use orbflow_core::ports::CredentialStore;
@@ -35,7 +36,11 @@ impl CredentialProxy {
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
         Self {
             cred_store,
-            http_client: reqwest::Client::new(),
+            http_client: reqwest::Client::builder()
+                .dns_resolver(Arc::new(ProxySsrfSafeResolver))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("failed to build HTTP client"),
         }
     }
 
