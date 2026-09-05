@@ -12,12 +12,54 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::net::SocketAddr;
 use std::sync::Arc;
+
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 
 use orbflow_core::OrbflowError;
 use orbflow_core::credential_proxy::{CapabilityRequest, CapabilityResponse};
 use orbflow_core::ports::CredentialStore;
 use orbflow_core::ssrf::{BLOCKED_HOSTNAMES, is_private_ip};
+
+struct ProxySsrfSafeResolver;
+
+impl Resolve for ProxySsrfSafeResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let name_str = name.as_str().to_string();
+        Box::pin(async move {
+            let mut resolved = tokio::net::lookup_host((name_str.as_str(), 0))
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+
+            let mut addrs: Vec<SocketAddr> = Vec::new();
+            for addr in resolved.by_ref() {
+                if let Some(reason) = is_private_ip(&addr.ip(), false) {
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!(
+                            "credential proxy DNS resolution blocked: {} resolves to {}",
+                            name_str, reason
+                        ),
+                    ))
+                        as Box<dyn std::error::Error + Send + Sync>);
+                }
+                addrs.push(addr);
+            }
+
+            if addrs.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("credential proxy URL hostname '{name_str}' resolved no addresses"),
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+
+            let iter: Addrs = Box::new(addrs.into_iter());
+            Ok(iter)
+        })
+    }
+}
 
 /// Executes capability requests by injecting credentials into HTTP calls.
 ///
@@ -35,7 +77,11 @@ impl CredentialProxy {
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
         Self {
             cred_store,
-            http_client: reqwest::Client::new(),
+            http_client: reqwest::Client::builder()
+                .dns_resolver(Arc::new(ProxySsrfSafeResolver))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("failed to build credential proxy client"),
         }
     }
 
@@ -166,34 +212,54 @@ async fn validate_proxy_url(url: &str) -> Result<reqwest::Url, OrbflowError> {
     }
 
     let host = parsed
-        .host_str()
-        .filter(|h| !h.is_empty())
-        .ok_or_else(|| OrbflowError::InvalidNodeConfig("proxy URL has no host".into()))?
-        .to_owned();
-    let host_lower = host.to_ascii_lowercase();
+        .host()
+        .ok_or_else(|| OrbflowError::InvalidNodeConfig("proxy URL has no host".into()))?;
+
+    let host_str = host.to_string();
+    let host_lower = host_str.to_ascii_lowercase();
     if host_lower == "localhost" || BLOCKED_HOSTNAMES.contains(&host_lower.as_str()) {
         return Err(OrbflowError::InvalidNodeConfig(format!(
-            "credential proxy blocked request to internal host: {host}"
+            "credential proxy blocked request to internal host: {host_str}"
         )));
     }
 
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        if let Some(reason) = is_private_ip(&ip, false) {
-            return Err(OrbflowError::InvalidNodeConfig(format!(
-                "credential proxy blocked request to {reason}: {host}"
-            )));
+    match host {
+        url::Host::Ipv4(ip) => {
+            if let Some(reason) = is_private_ip(&IpAddr::V4(ip), false) {
+                return Err(OrbflowError::InvalidNodeConfig(format!(
+                    "credential proxy blocked request to {reason}: {host_str}"
+                )));
+            }
+            return Ok(parsed);
         }
-        return Ok(parsed);
+        url::Host::Ipv6(ip) => {
+            if let Some(reason) = is_private_ip(&IpAddr::V6(ip), false) {
+                return Err(OrbflowError::InvalidNodeConfig(format!(
+                    "credential proxy blocked request to {reason}: {host_str}"
+                )));
+            }
+            return Ok(parsed);
+        }
+        url::Host::Domain(d) => {
+            if let Ok(ip) = d.parse::<IpAddr>() {
+                if let Some(reason) = is_private_ip(&ip, false) {
+                    return Err(OrbflowError::InvalidNodeConfig(format!(
+                        "credential proxy blocked request to {reason}: {host_str}"
+                    )));
+                }
+                return Ok(parsed);
+            }
+        }
     }
 
     let port = parsed
         .port_or_known_default()
         .ok_or_else(|| OrbflowError::InvalidNodeConfig("proxy URL has no port".into()))?;
-    let mut resolved = tokio::net::lookup_host((host.as_str(), port))
+    let mut resolved = tokio::net::lookup_host((host_str.as_str(), port))
         .await
         .map_err(|_| {
             OrbflowError::InvalidNodeConfig(format!(
-                "credential proxy URL hostname '{host}' could not be resolved"
+                "credential proxy URL hostname '{host_str}' could not be resolved"
             ))
         })?;
 
@@ -202,7 +268,7 @@ async fn validate_proxy_url(url: &str) -> Result<reqwest::Url, OrbflowError> {
         saw_address = true;
         if let Some(reason) = is_private_ip(&addr.ip(), false) {
             return Err(OrbflowError::InvalidNodeConfig(format!(
-                "credential proxy URL hostname '{host}' resolves to {reason} ({})",
+                "credential proxy URL hostname '{host_str}' resolves to {reason} ({})",
                 addr.ip()
             )));
         }
@@ -210,7 +276,7 @@ async fn validate_proxy_url(url: &str) -> Result<reqwest::Url, OrbflowError> {
 
     if !saw_address {
         return Err(OrbflowError::InvalidNodeConfig(format!(
-            "credential proxy URL hostname '{host}' resolved no addresses"
+            "credential proxy URL hostname '{host_str}' resolved no addresses"
         )));
     }
 
