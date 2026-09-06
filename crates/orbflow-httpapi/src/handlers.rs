@@ -2773,9 +2773,9 @@ pub async fn uninstall_plugin(
             return Err("symlink");
         }
         // Canonicalize and verify it stays within plugins_dir.
-        let canonical_base = std::fs::canonicalize(&plugins_base)
-            .unwrap_or_else(|_| std::path::PathBuf::from(&plugins_base));
-        let canonical_dir = std::fs::canonicalize(&dir_check).unwrap_or_else(|_| dir_check.clone());
+        let canonical_base =
+            std::fs::canonicalize(&plugins_base).map_err(|_| "canonicalize_failed")?;
+        let canonical_dir = std::fs::canonicalize(&dir_check).map_err(|_| "canonicalize_failed")?;
         if !canonical_dir.starts_with(&canonical_base) {
             return Err("outside_base");
         }
@@ -2786,6 +2786,12 @@ pub async fn uninstall_plugin(
     match check_result {
         Ok(Ok(())) => {}
         Ok(Err("not_found")) => return write_error(StatusCode::NOT_FOUND, "plugin not installed"),
+        Ok(Err("canonicalize_failed")) => {
+            return write_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to canonicalize paths",
+            );
+        }
         Ok(Err(_)) => return write_error(StatusCode::BAD_REQUEST, "invalid plugin directory"),
         Err(_) => return write_error(StatusCode::INTERNAL_SERVER_ERROR, "check task failed"),
     }
