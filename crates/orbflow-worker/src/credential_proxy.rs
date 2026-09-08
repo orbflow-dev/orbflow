@@ -12,7 +12,11 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::net::SocketAddr;
 use std::sync::Arc;
+
+use reqwest::dns::{Addrs, Name, Resolve};
+use reqwest::redirect::Policy;
 
 use orbflow_core::OrbflowError;
 use orbflow_core::credential_proxy::{CapabilityRequest, CapabilityResponse};
@@ -30,12 +34,50 @@ pub struct CredentialProxy {
     http_client: reqwest::Client,
 }
 
+#[derive(Clone)]
+struct ProxySsrfSafeResolver;
+
+impl Resolve for ProxySsrfSafeResolver {
+    fn resolve(&self, name: Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let mut resolved = tokio::net::lookup_host((host.as_str(), 0))
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+
+            let mut addrs: Vec<SocketAddr> = Vec::new();
+            for addr in resolved.by_ref() {
+                if let Some(reason) = is_private_ip(&addr.ip(), false) {
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!(
+                            "credential proxy DNS resolved to {} ({})",
+                            reason,
+                            addr.ip()
+                        ),
+                    ))
+                        as Box<dyn std::error::Error + Send + Sync>);
+                }
+                addrs.push(addr);
+            }
+            let iter: Addrs = Box::new(addrs.into_iter());
+            Ok(iter)
+        })
+    }
+}
+
 impl CredentialProxy {
     /// Creates a new proxy backed by the given credential store.
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
+        let http_client = reqwest::Client::builder()
+            .redirect(Policy::none())
+            .dns_resolver(Arc::new(ProxySsrfSafeResolver))
+            .build()
+            .expect("failed to build secure HTTP client");
+
         Self {
             cred_store,
-            http_client: reqwest::Client::new(),
+            http_client,
         }
     }
 
