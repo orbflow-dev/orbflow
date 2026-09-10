@@ -2773,7 +2773,8 @@ pub async fn uninstall_plugin(
             return Err("symlink");
         }
         // Canonicalize and verify it stays within plugins_dir.
-        let canonical_base = std::fs::canonicalize(&plugins_base).map_err(|_| "canonicalize_base")?;
+        let canonical_base =
+            std::fs::canonicalize(&plugins_base).map_err(|_| "canonicalize_base")?;
         let canonical_dir = std::fs::canonicalize(&dir_check).map_err(|_| "canonicalize_dir")?;
         if !canonical_dir.starts_with(&canonical_base) {
             return Err("outside_base");
