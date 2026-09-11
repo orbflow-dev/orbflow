@@ -10,6 +10,7 @@
 //! the appropriate authentication header, executes the HTTP request,
 //! and returns a sanitized [`CapabilityResponse`].
 
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -33,9 +34,15 @@ pub struct CredentialProxy {
 impl CredentialProxy {
     /// Creates a new proxy backed by the given credential store.
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
+        let http_client = reqwest::Client::builder()
+            .dns_resolver(Arc::new(ProxySsrfSafeResolver))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("Failed to build secure HTTP client for credential proxy");
+
         Self {
             cred_store,
-            http_client: reqwest::Client::new(),
+            http_client,
         }
     }
 
@@ -147,6 +154,51 @@ impl CredentialProxy {
             headers: resp_headers,
             body,
             error: None,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct ProxySsrfSafeResolver;
+
+impl Resolve for ProxySsrfSafeResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        Box::pin(async move {
+            let host = name.as_str();
+
+            let resolved = match tokio::net::lookup_host((host, 0)).await {
+                Ok(r) => r,
+                Err(e) => return Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
+            };
+
+            let mut addrs = Vec::new();
+            for addr in resolved {
+                if let Some(reason) = is_private_ip(&addr.ip(), false) {
+                    let err = std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!(
+                            "credential proxy DNS resolution blocked: {} resolves to {}",
+                            host, reason
+                        ),
+                    );
+                    return Err(Box::new(err) as Box<dyn std::error::Error + Send + Sync>);
+                }
+                addrs.push(addr);
+            }
+
+            if addrs.is_empty() {
+                let err = std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!(
+                        "credential proxy DNS resolution failed: {} resolved to no addresses",
+                        host
+                    ),
+                );
+                return Err(Box::new(err) as Box<dyn std::error::Error + Send + Sync>);
+            }
+
+            let addrs_iter: Addrs = Box::new(addrs.into_iter());
+            Ok(addrs_iter)
         })
     }
 }
