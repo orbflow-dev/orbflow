@@ -279,10 +279,11 @@ struct RateLimitBody {
 }
 
 /// Extracts and validates a workflow ID from the path, then checks rate limit.
+#[allow(clippy::result_large_err)]
 pub async fn check_start_rate_limit(
     limiter: &StartRateLimiter,
     workflow_id: &str,
-) -> Result<(), axum::http::Response<axum::body::Body>> {
+) -> Result<(), Response> {
     limiter.check(workflow_id)
 }
 
@@ -416,7 +417,7 @@ pub fn check_permission(
     workflow_id: &str,
     node_id: Option<&str>,
     bootstrap_admin: Option<&str>,
-) -> Result<(), axum::http::Response<axum::body::Body>> {
+) -> Result<(), Response> {
     if has_permission(
         rbac_policy,
         user_id,
@@ -439,7 +440,7 @@ pub fn has_permission(
     workflow_id: &str,
     node_id: Option<&str>,
     bootstrap_admin: Option<&str>,
-) -> Result<bool, axum::http::Response<axum::body::Body>> {
+) -> Result<bool, Response> {
     let Some(policy_lock) = rbac_policy else {
         return Ok(true);
     };
