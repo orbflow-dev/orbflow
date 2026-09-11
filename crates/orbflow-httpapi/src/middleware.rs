@@ -282,7 +282,7 @@ struct RateLimitBody {
 pub async fn check_start_rate_limit(
     limiter: &StartRateLimiter,
     workflow_id: &str,
-) -> Result<(), Response> {
+) -> Result<(), axum::http::Response<axum::body::Body>> {
     limiter.check(workflow_id)
 }
 
@@ -416,7 +416,7 @@ pub fn check_permission(
     workflow_id: &str,
     node_id: Option<&str>,
     bootstrap_admin: Option<&str>,
-) -> Result<(), Response> {
+) -> Result<(), axum::http::Response<axum::body::Body>> {
     if has_permission(
         rbac_policy,
         user_id,
@@ -439,7 +439,7 @@ pub fn has_permission(
     workflow_id: &str,
     node_id: Option<&str>,
     bootstrap_admin: Option<&str>,
-) -> Result<bool, Response> {
+) -> Result<bool, axum::http::Response<axum::body::Body>> {
     let Some(policy_lock) = rbac_policy else {
         return Ok(true);
     };
