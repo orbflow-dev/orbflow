@@ -6,3 +6,8 @@
 **Vulnerability:** The `isSafeUrl` function checked for unsafe URL schemes (e.g., `javascript:`, `data:`) by trimming and lowercasing the input, but did not handle non-printable control characters. Attackers could bypass the check by injecting characters like `\x01` or tabs (`\x09`) into the URL scheme (e.g., `java\x09script:alert(1)`), which the browser would ignore and execute as XSS.
 **Learning:** Browsers are highly lenient when parsing URL schemes and will strip out invalid control characters before evaluation. Simple string prefix checks (`startsWith`) are insufficient for validating URLs because they don't account for these obfuscation techniques.
 **Prevention:** Before validating a URL scheme against a blocklist, always sanitize the input by explicitly stripping non-printable control characters (`[\x00-\x1F\x7F-\x9F]`) using a regex.
+
+## 2024-09-14 - Path Traversal Prevention Bypass via Fail-Open Canonicalization
+**Vulnerability:** Path traversal check in `uninstall_plugin` used `.unwrap_or_else()` on `std::fs::canonicalize()`, falling back to uncanonicalized paths on failure. This bypasses `starts_with()` which compares path components textually (e.g., `/plugins/../target` starts with `/plugins`), potentially allowing arbitrary directory deletion if canonicalization is forced to fail.
+**Learning:** Security-critical operations like path canonicalization for containment checks must fail securely (fail closed) rather than gracefully falling back to insecure states.
+**Prevention:** Always handle `canonicalize()` errors by aborting the operation. Never fall back to uncanonicalized paths when performing directory containment checks with `starts_with()`.
