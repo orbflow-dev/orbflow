@@ -75,7 +75,7 @@ async fn post_signed(addr: SocketAddr, path: &str, body: &[u8], signature: &str)
         .expect("HTTP response status code");
     (status, text)
 }
-
+#[allow(clippy::type_complexity)]
 fn recording_callback() -> (
     TriggerCallback,
     mpsc::Receiver<(WorkflowId, TriggerType, HashMap<String, serde_json::Value>)>,
