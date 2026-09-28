@@ -14,10 +14,12 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 
+use crate::resolver::ProxySsrfSafeResolver;
 use orbflow_core::OrbflowError;
 use orbflow_core::credential_proxy::{CapabilityRequest, CapabilityResponse};
 use orbflow_core::ports::CredentialStore;
 use orbflow_core::ssrf::{BLOCKED_HOSTNAMES, is_private_ip};
+use reqwest::redirect::Policy;
 
 /// Executes capability requests by injecting credentials into HTTP calls.
 ///
@@ -33,9 +35,17 @@ pub struct CredentialProxy {
 impl CredentialProxy {
     /// Creates a new proxy backed by the given credential store.
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
+        // Use a custom DNS resolver that checks for SSRF targets before connecting.
+        // Disable redirects completely to prevent credential leakage to unauthorized domains.
+        let http_client = reqwest::Client::builder()
+            .dns_resolver(std::sync::Arc::new(ProxySsrfSafeResolver))
+            .redirect(Policy::none())
+            .build()
+            .expect("credential proxy http client failed to build safely");
+
         Self {
             cred_store,
-            http_client: reqwest::Client::new(),
+            http_client,
         }
     }
 

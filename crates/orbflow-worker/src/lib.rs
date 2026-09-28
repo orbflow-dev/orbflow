@@ -7,3 +7,4 @@ pub mod credential_proxy;
 mod worker;
 
 pub use worker::{Worker, WorkerOptions};
+pub mod resolver;
