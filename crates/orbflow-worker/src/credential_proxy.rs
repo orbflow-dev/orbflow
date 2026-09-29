@@ -30,12 +30,66 @@ pub struct CredentialProxy {
     http_client: reqwest::Client,
 }
 
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
+
+struct ProxySsrfSafeResolver;
+
+impl Resolve for ProxySsrfSafeResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        Box::pin(async move {
+            let host = name.as_str();
+
+            let host_lower = host.to_ascii_lowercase();
+            if host_lower == "localhost" || BLOCKED_HOSTNAMES.contains(&host_lower.as_str()) {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("blocked request to internal host: {}", host),
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+
+            let resolved = tokio::net::lookup_host((host, 0))
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+
+            let mut addrs = Vec::new();
+            for addr in resolved {
+                if let Some(reason) = is_private_ip(&addr.ip(), false) {
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!("hostname '{}' resolves to {} ({})", host, reason, addr.ip()),
+                    ))
+                        as Box<dyn std::error::Error + Send + Sync>);
+                }
+                addrs.push(std::net::SocketAddr::new(addr.ip(), 0));
+            }
+
+            if addrs.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("hostname '{}' resolved no addresses", host),
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+
+            let addrs_iter: Addrs = Box::new(addrs.into_iter());
+            Ok(addrs_iter)
+        })
+    }
+}
+
 impl CredentialProxy {
     /// Creates a new proxy backed by the given credential store.
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
+        let client = reqwest::Client::builder()
+            .dns_resolver(Arc::new(ProxySsrfSafeResolver))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("Failed to build credential proxy client");
+
         Self {
             cred_store,
-            http_client: reqwest::Client::new(),
+            http_client: client,
         }
     }
 
