@@ -64,8 +64,9 @@ fn shipped_docker_config_keeps_grpc_disabled() {
 #[test]
 fn shipped_docker_config_grpc_port_is_default() {
     let path = docker_yaml_path();
-    let cfg = Config::load(&path)
-        .unwrap_or_else(|e| panic!("Config::load({}) failed: {e}", path.display()));
+    let cfg = Config::load(&path).unwrap_or_else(|e| {
+        panic!("Config::load({}) failed: {e}", path.display())
+    });
 
     assert_eq!(
         cfg.grpc.port, 9090,
