@@ -7,6 +7,8 @@
 //! implements one adapter or orchestration concern. Dependencies point inward —
 //! only `orbflow-core` is imported across crate boundaries.
 
+#![allow(clippy::double_must_use)]
+
 pub mod alerts;
 pub mod analytics;
 pub mod audit;
