@@ -6,3 +6,7 @@
 **Vulnerability:** The `isSafeUrl` function checked for unsafe URL schemes (e.g., `javascript:`, `data:`) by trimming and lowercasing the input, but did not handle non-printable control characters. Attackers could bypass the check by injecting characters like `\x01` or tabs (`\x09`) into the URL scheme (e.g., `java\x09script:alert(1)`), which the browser would ignore and execute as XSS.
 **Learning:** Browsers are highly lenient when parsing URL schemes and will strip out invalid control characters before evaluation. Simple string prefix checks (`startsWith`) are insufficient for validating URLs because they don't account for these obfuscation techniques.
 **Prevention:** Before validating a URL scheme against a blocklist, always sanitize the input by explicitly stripping non-printable control characters (`[\x00-\x1F\x7F-\x9F]`) using a regex.
+## 2024-05-15 - [CredentialProxy SSRF and Credential Leakage]
+**Vulnerability:** TOCTOU DNS rebinding and credential leakage through HTTP redirects in CredentialProxy.
+**Learning:** Initial URL validation is insufficient if the HTTP client handles DNS resolution separately or automatically follows redirects with injected credentials.
+**Prevention:** Implement a custom DNS resolver (`reqwest::dns::Resolve`) to validate IPs synchronously during resolution, and aggressively disable HTTP redirects (`Policy::none()`) on clients handling credentials.
