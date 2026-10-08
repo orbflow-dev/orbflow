@@ -33,9 +33,14 @@ pub struct CredentialProxy {
 impl CredentialProxy {
     /// Creates a new proxy backed by the given credential store.
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
+        let http_client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .dns_resolver(std::sync::Arc::new(ProxySsrfSafeResolver))
+            .build()
+            .expect("failed to build secure credential proxy client");
         Self {
             cred_store,
-            http_client: reqwest::Client::new(),
+            http_client,
         }
     }
 
@@ -215,4 +220,30 @@ async fn validate_proxy_url(url: &str) -> Result<reqwest::Url, OrbflowError> {
     }
 
     Ok(parsed)
+}
+
+#[derive(Clone)]
+struct ProxySsrfSafeResolver;
+
+impl reqwest::dns::Resolve for ProxySsrfSafeResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let name_str = name.as_str().to_string();
+        Box::pin(async move {
+            let mut safe_addrs = Vec::new();
+            // Append a dummy port (0) since lookup_host requires it
+            for addr in tokio::net::lookup_host((name_str.as_str(), 0)).await? {
+                if let Some(reason) = is_private_ip(&addr.ip(), false) {
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!("SSRF blocked {reason}: {name_str}"),
+                    ))
+                        as Box<dyn std::error::Error + Send + Sync>);
+                }
+                safe_addrs.push(addr);
+            }
+            // Use reqwest::dns::Addrs type alias (Box<dyn Iterator<...>>)
+            let iter: reqwest::dns::Addrs = Box::new(safe_addrs.into_iter());
+            Ok(iter)
+        })
+    }
 }
