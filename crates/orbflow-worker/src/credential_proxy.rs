@@ -247,7 +247,8 @@ impl reqwest::dns::Resolve for ProxySsrfSafeResolver {
                 return Err(Box::new(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
                     "all resolved addresses are private/internal (SSRF protection)",
-                )) as Box<dyn std::error::Error + Send + Sync>);
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
             }
 
             let iter: reqwest::dns::Addrs = Box::new(validated.into_iter());
