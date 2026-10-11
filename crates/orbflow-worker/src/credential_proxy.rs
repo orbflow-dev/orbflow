@@ -33,9 +33,15 @@ pub struct CredentialProxy {
 impl CredentialProxy {
     /// Creates a new proxy backed by the given credential store.
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
+        let http_client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .dns_resolver(Arc::new(ProxySsrfSafeResolver))
+            .build()
+            .expect("credential proxy HTTP client failed to build securely");
+
         Self {
             cred_store,
-            http_client: reqwest::Client::new(),
+            http_client,
         }
     }
 
@@ -215,4 +221,37 @@ async fn validate_proxy_url(url: &str) -> Result<reqwest::Url, OrbflowError> {
     }
 
     Ok(parsed)
+}
+
+/// Custom DNS resolver for the CredentialProxy that validates each resolved IP against
+/// SSRF blocklists. This closes the TOCTOU (Time-Of-Check to Time-Of-Use) gap between
+/// the initial URL validation and reqwest's actual connection.
+struct ProxySsrfSafeResolver;
+
+impl reqwest::dns::Resolve for ProxySsrfSafeResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let host = name.as_str();
+            let addrs = tokio::net::lookup_host((host, 0))
+                .await
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
+
+            let mut validated = Vec::new();
+            for addr in addrs {
+                if is_private_ip(&addr.ip(), false).is_none() {
+                    validated.push(addr);
+                }
+            }
+
+            if validated.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "all resolved addresses are private/internal (SSRF protection)",
+                )) as Box<dyn std::error::Error + Send + Sync>);
+            }
+
+            let iter: reqwest::dns::Addrs = Box::new(validated.into_iter());
+            Ok(iter)
+        })
+    }
 }
