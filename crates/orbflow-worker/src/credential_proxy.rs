@@ -75,7 +75,7 @@ impl CredentialProxy {
             .dns_resolver(Arc::new(ProxySsrfSafeResolver))
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+            .expect("failed to build secure HTTP client");
 
         Self {
             cred_store,
