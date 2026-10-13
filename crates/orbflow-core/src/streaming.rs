@@ -20,6 +20,8 @@
 //! relays chunks to the bus as `StreamMessage`. The engine or SSE endpoint
 //! subscribes to the stream subject and forwards chunks to the UI.
 
+#![allow(clippy::double_must_use)]
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
