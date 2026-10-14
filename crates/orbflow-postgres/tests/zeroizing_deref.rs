@@ -12,8 +12,8 @@
 //! `Zeroizing<Vec<u8>>` implements `Deref<Target = Vec<u8>>` and `Vec<u8>`
 //! coerces to `&[u8]` in a reference context.
 
-use std::collections::HashMap;
 use serde_json::Value;
+use std::collections::HashMap;
 use zeroize::Zeroizing;
 
 /// T-08 Risk #1: Zeroizing<Vec<u8>> derefs into serde_json::from_slice without
@@ -74,8 +74,7 @@ fn zeroized_buffer_value_is_still_readable_after_parse() {
 
     // After from_slice the parsed Value lives in heap memory NOT covered by Zeroizing.
     // This is the documented residual from T-08 (see PLAN.md Risk #12).
-    let parsed: HashMap<String, Value> =
-        serde_json::from_slice(&plaintext).expect("parse");
+    let parsed: HashMap<String, Value> = serde_json::from_slice(&plaintext).expect("parse");
     let password = parsed["password"].as_str().expect("string");
     assert_eq!(password, "hunter2");
 
