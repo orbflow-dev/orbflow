@@ -18,6 +18,62 @@ use orbflow_core::OrbflowError;
 use orbflow_core::credential_proxy::{CapabilityRequest, CapabilityResponse};
 use orbflow_core::ports::CredentialStore;
 use orbflow_core::ssrf::{BLOCKED_HOSTNAMES, is_private_ip};
+use reqwest::dns::{Addrs, Name, Resolve};
+
+struct ProxySsrfSafeResolver;
+
+impl Resolve for ProxySsrfSafeResolver {
+    fn resolve(&self, name: Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let host = name.as_str();
+            let mut addrs = Vec::new();
+
+            if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                if let Some(reason) = is_private_ip(&ip, false) {
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!("SSRF blocked: literal IP {} is private ({})", ip, reason),
+                    ))
+                        as Box<dyn std::error::Error + Send + Sync>);
+                }
+                addrs.push(std::net::SocketAddr::new(ip, 0));
+            } else {
+                let resolved = match tokio::net::lookup_host((host, 0)).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>);
+                    }
+                };
+                for addr in resolved {
+                    if let Some(reason) = is_private_ip(&addr.ip(), false) {
+                        return Err(Box::new(std::io::Error::new(
+                            std::io::ErrorKind::PermissionDenied,
+                            format!(
+                                "SSRF blocked: {} resolved to private IP {} ({})",
+                                host,
+                                addr.ip(),
+                                reason
+                            ),
+                        ))
+                            as Box<dyn std::error::Error + Send + Sync>);
+                    }
+                    addrs.push(addr);
+                }
+            }
+
+            if addrs.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "No addresses found",
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+
+            let iter: Addrs = Box::new(addrs.into_iter());
+            Ok(iter)
+        })
+    }
+}
 
 /// Executes capability requests by injecting credentials into HTTP calls.
 ///
@@ -33,9 +89,15 @@ pub struct CredentialProxy {
 impl CredentialProxy {
     /// Creates a new proxy backed by the given credential store.
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
+        let http_client = reqwest::Client::builder()
+            .dns_resolver(Arc::new(ProxySsrfSafeResolver))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("Failed to build credential proxy HTTP client");
+
         Self {
             cred_store,
-            http_client: reqwest::Client::new(),
+            http_client,
         }
     }
 
@@ -52,6 +114,23 @@ impl CredentialProxy {
     ) -> Result<CapabilityResponse, OrbflowError> {
         // 0. Validate URL against SSRF blocklists
         let validated_url = validate_proxy_url(&req.url).await?;
+
+        // Additional SSRF Protection: validate_proxy_url checks literal IPs, but
+        // if it resolved a hostname, reqwest will resolve it again and could hit a private IP
+        // via DNS rebinding. However, if the URL contains a literal IP directly, it bypasses
+        // the custom DNS resolver. Thus, we explicitly reject literal private IPs here *before*
+        // executing the request if it bypassed validate_proxy_url somehow.
+        let ip_from_host = match validated_url.host() {
+            Some(url::Host::Ipv4(v4)) => Some(std::net::IpAddr::V4(v4)),
+            Some(url::Host::Ipv6(v6)) => Some(std::net::IpAddr::V6(v6)),
+            _ => None,
+        };
+
+        if let Some(ip) = ip_from_host {
+            if let Some(reason) = is_private_ip(&ip, false) {
+                return Err(OrbflowError::InvalidNodeConfig(format!("SSRF blocked: literal IP {} is private ({})", ip, reason)));
+            }
+        }
 
         // 1. Fetch the credential
         let cred = self.cred_store.get_credential(&req.credential_id).await?;
