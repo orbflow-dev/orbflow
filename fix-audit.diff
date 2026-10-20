@@ -1,0 +1,18 @@
+--- Cargo.toml
++++ Cargo.toml
+@@ -107,6 +107,15 @@
+ orbflow-test = { path = "crates/orbflow-test" }
+ orbflow-testutil = { path = "crates/orbflow-testutil" }
+
++[patch.crates-io]
++rustls = { version = "0.23.46", default-features = false }
++event-listener = "5.4.2"
++h2 = "0.4.16"
++quinn-proto = "0.11.18"
++crossbeam-epoch = "0.9.20"
++anyhow = "1.0.103"
++paste = "1.0.15"
++
+ # Disable PDB debug info to avoid Windows MSVC linker limits (LNK1318)
+ [profile.dev]
+ debug = false
