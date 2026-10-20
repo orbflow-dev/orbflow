@@ -3,6 +3,8 @@
 
 //! Port interfaces — the contracts that adapters must implement.
 
+#![allow(clippy::double_must_use)]
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;

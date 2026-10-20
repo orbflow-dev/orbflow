@@ -123,8 +123,8 @@ async fn ts_sdk_get_schemas() {
     assert_eq!(schema.plugin_ref, "plugin:weather-forecast");
     assert_eq!(schema.name, "Weather Forecast");
     assert_eq!(schema.category, "utility");
-    assert!(schema.inputs.len() >= 1);
-    assert!(schema.outputs.len() >= 2);
+    assert!(!schema.inputs.is_empty());
+    assert!(schema.outputs.len() >= 2); // Leaving this as >= 2 as it's checking for at least 2
 }
 
 #[tokio::test]
