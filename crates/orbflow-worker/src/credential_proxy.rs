@@ -128,7 +128,10 @@ impl CredentialProxy {
 
         if let Some(ip) = ip_from_host {
             if let Some(reason) = is_private_ip(&ip, false) {
-                return Err(OrbflowError::InvalidNodeConfig(format!("SSRF blocked: literal IP {} is private ({})", ip, reason)));
+                return Err(OrbflowError::InvalidNodeConfig(format!(
+                    "SSRF blocked: literal IP {} is private ({})",
+                    ip, reason
+                )));
             }
         }
 
