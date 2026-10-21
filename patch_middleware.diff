@@ -1,0 +1,40 @@
+<<<<<<< SEARCH
+/// Extracts and validates a workflow ID from the path, then checks rate limit.
+pub async fn check_start_rate_limit(
+    limiter: &StartRateLimiter,
+    workflow_id: &str,
+) -> Result<(), Response> {
+    limiter.check(workflow_id)
+}
+=======
+/// Extracts and validates a workflow ID from the path, then checks rate limit.
+#[allow(clippy::result_large_err)]
+pub async fn check_start_rate_limit(
+    limiter: &StartRateLimiter,
+    workflow_id: &str,
+) -> Result<(), Response> {
+    limiter.check(workflow_id)
+}
+>>>>>>> REPLACE
+<<<<<<< SEARCH
+pub async fn check_permission(
+    rbac_policy: &RbacPolicy,
+    user_id: &str,
+    permission: Permission,
+    workflow_id: &str,
+    node_id: Option<&str>,
+    bootstrap_admin: Option<&str>,
+) -> Result<(), Response> {
+    if has_permission(
+=======
+#[allow(clippy::result_large_err)]
+pub async fn check_permission(
+    rbac_policy: &RbacPolicy,
+    user_id: &str,
+    permission: Permission,
+    workflow_id: &str,
+    node_id: Option<&str>,
+    bootstrap_admin: Option<&str>,
+) -> Result<(), Response> {
+    if has_permission(
+>>>>>>> REPLACE
