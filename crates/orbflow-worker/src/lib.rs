@@ -4,6 +4,7 @@
 //! Task executor: subscribes to bus, routes to NodeExecutor implementations.
 
 pub mod credential_proxy;
+pub mod ssrf_proxy;
 mod worker;
 
 pub use worker::{Worker, WorkerOptions};

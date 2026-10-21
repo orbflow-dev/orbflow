@@ -35,7 +35,13 @@ impl CredentialProxy {
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
         Self {
             cred_store,
-            http_client: reqwest::Client::new(),
+            http_client: reqwest::Client::builder()
+                .dns_resolver(std::sync::Arc::new(
+                    crate::ssrf_proxy::ProxySsrfSafeResolver,
+                ))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("Failed to build secure HTTP client for proxy"),
         }
     }
 
