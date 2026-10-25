@@ -1,6 +1,8 @@
 // Copyright 2026 The Orbflow Authors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+#![allow(clippy::double_must_use)]
+
 //! Port interfaces — the contracts that adapters must implement.
 
 use std::collections::HashMap;
