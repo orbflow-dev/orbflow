@@ -6,3 +6,8 @@
 **Vulnerability:** The `isSafeUrl` function checked for unsafe URL schemes (e.g., `javascript:`, `data:`) by trimming and lowercasing the input, but did not handle non-printable control characters. Attackers could bypass the check by injecting characters like `\x01` or tabs (`\x09`) into the URL scheme (e.g., `java\x09script:alert(1)`), which the browser would ignore and execute as XSS.
 **Learning:** Browsers are highly lenient when parsing URL schemes and will strip out invalid control characters before evaluation. Simple string prefix checks (`startsWith`) are insufficient for validating URLs because they don't account for these obfuscation techniques.
 **Prevention:** Before validating a URL scheme against a blocklist, always sanitize the input by explicitly stripping non-printable control characters (`[\x00-\x1F\x7F-\x9F]`) using a regex.
+
+## $(date +%Y-%m-%d) - Path canonicalization fail-open vulnerability
+**Vulnerability:** The plugin removal endpoint canonicalized paths to check against path traversal. However, if canonicalization failed (e.g. if the directory did not exist yet, or access denied), it used `unwrap_or_else` to fallback to uncanonicalized paths. This caused `starts_with` to evaluate uncanonicalized components (e.g., `/var/plugins` `starts_with` `/var/plugins/../secrets` evaluating to true), bypassing the check.
+**Learning:** Security validation functions must fail securely. Falling back to insecure defaults in a validation function renders the check useless. Furthermore, `Path::starts_with` checks components literally rather than resolving them.
+**Prevention:** Ensure path canonicalization uses `map_err` (or propagates errors) instead of `unwrap_or_else` when validating boundaries to fail securely.
