@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use orbflow_core::OrbflowError;
@@ -33,9 +34,14 @@ pub struct CredentialProxy {
 impl CredentialProxy {
     /// Creates a new proxy backed by the given credential store.
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .dns_resolver(Arc::new(ProxySsrfSafeResolver))
+            .build()
+            .expect("credential proxy failed to initialize secure HTTP client");
         Self {
             cred_store,
-            http_client: reqwest::Client::new(),
+            http_client: client,
         }
     }
 
@@ -215,4 +221,42 @@ async fn validate_proxy_url(url: &str) -> Result<reqwest::Url, OrbflowError> {
     }
 
     Ok(parsed)
+}
+
+/// A custom DNS resolver that validates resolved IPs against private/internal ranges.
+/// This prevents TOCTOU / DNS rebinding attacks when the reqwest client executes the request.
+pub struct ProxySsrfSafeResolver;
+
+impl reqwest::dns::Resolve for ProxySsrfSafeResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let name_str = name.as_str().to_string();
+        Box::pin(async move {
+            let resolved = tokio::net::lookup_host((name_str.as_str(), 0))
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            let mut addrs: Vec<SocketAddr> = Vec::new();
+            for addr in resolved {
+                if let Some(reason) = is_private_ip(&addr.ip(), false) {
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!(
+                            "DNS resolution blocked: {} resolves to {}",
+                            name_str, reason
+                        ),
+                    ))
+                        as Box<dyn std::error::Error + Send + Sync>);
+                }
+                addrs.push(addr);
+            }
+            if addrs.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "No addresses found",
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+            let iter: reqwest::dns::Addrs = Box::new(addrs.into_iter());
+            Ok(iter)
+        })
+    }
 }
