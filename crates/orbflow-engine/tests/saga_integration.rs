@@ -499,11 +499,7 @@ impl Bus for CompensationFailingBus {
         self.inner.publish(subject, data).await
     }
 
-    async fn subscribe(
-        &self,
-        subject: &str,
-        handler: MsgHandler,
-    ) -> Result<(), OrbflowError> {
+    async fn subscribe(&self, subject: &str, handler: MsgHandler) -> Result<(), OrbflowError> {
         self.inner.subscribe(subject, handler).await
     }
 
@@ -664,10 +660,7 @@ async fn saga_dispatch_failure_leaves_node_pending_for_recovery() {
     // compensation execution.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-    let inst = store
-        .get_instance(&inst_id)
-        .await
-        .expect("get_instance");
+    let inst = store.get_instance(&inst_id).await.expect("get_instance");
     let saga = inst.saga.as_ref().expect("saga state present");
     assert!(
         saga.compensating,
