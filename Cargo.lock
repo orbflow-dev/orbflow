@@ -2641,6 +2641,7 @@ dependencies = [
  "tokio-test",
  "tracing",
  "tracing-opentelemetry",
+ "url",
  "uuid",
 ]
 
