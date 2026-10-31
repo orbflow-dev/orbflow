@@ -30,12 +30,43 @@ pub struct CredentialProxy {
     http_client: reqwest::Client,
 }
 
+struct ProxySsrfSafeResolver;
+
+impl reqwest::dns::Resolve for ProxySsrfSafeResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let addrs: Vec<std::net::SocketAddr> =
+                tokio::net::lookup_host((name.as_str(), 0))
+                    .await
+                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?
+                    .collect();
+            let validated: Vec<std::net::SocketAddr> = addrs
+                .into_iter()
+                .filter(|a| is_private_ip(&a.ip(), false).is_none())
+                .collect();
+            if validated.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "all resolved addresses are private/internal (SSRF protection)",
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+            Ok(Box::new(validated.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
 impl CredentialProxy {
     /// Creates a new proxy backed by the given credential store.
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
+        let http_client = reqwest::Client::builder()
+            .dns_resolver(Arc::new(ProxySsrfSafeResolver))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("failed to build credential proxy HTTP client");
         Self {
             cred_store,
-            http_client: reqwest::Client::new(),
+            http_client,
         }
     }
 
@@ -189,7 +220,7 @@ async fn validate_proxy_url(url: &str) -> Result<reqwest::Url, OrbflowError> {
     let port = parsed
         .port_or_known_default()
         .ok_or_else(|| OrbflowError::InvalidNodeConfig("proxy URL has no port".into()))?;
-    let mut resolved = tokio::net::lookup_host((host.as_str(), port))
+    let resolved = tokio::net::lookup_host((host.as_str(), port))
         .await
         .map_err(|_| {
             OrbflowError::InvalidNodeConfig(format!(
@@ -198,7 +229,7 @@ async fn validate_proxy_url(url: &str) -> Result<reqwest::Url, OrbflowError> {
         })?;
 
     let mut saw_address = false;
-    for addr in resolved.by_ref() {
+    for addr in resolved {
         saw_address = true;
         if let Some(reason) = is_private_ip(&addr.ip(), false) {
             return Err(OrbflowError::InvalidNodeConfig(format!(
