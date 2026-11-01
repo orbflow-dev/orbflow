@@ -11,7 +11,7 @@ orbflow-core = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 async-trait = { workspace = true }
-tokio = { workspace = true }
+tokio.workspace = true
 tracing = { workspace = true }
 reqwest = { workspace = true }
 thiserror = { workspace = true }
