@@ -10,6 +10,7 @@
 //! the appropriate authentication header, executes the HTTP request,
 //! and returns a sanitized [`CapabilityResponse`].
 
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -30,12 +31,50 @@ pub struct CredentialProxy {
     http_client: reqwest::Client,
 }
 
+/// Custom DNS resolver for the credential proxy to prevent TOCTOU SSRF attacks.
+struct ProxySsrfSafeResolver;
+
+impl Resolve for ProxySsrfSafeResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        Box::pin(async move {
+            let host = name.as_str().to_string();
+            let resolved = tokio::net::lookup_host((host.as_str(), 0))
+                .await
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
+
+            let mut validated = Vec::new();
+            for addr in resolved {
+                if is_private_ip(&addr.ip(), false).is_none() {
+                    validated.push(addr);
+                }
+            }
+
+            if validated.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "all resolved addresses are private/internal (SSRF protection)",
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+
+            let iter: Addrs = Box::new(validated.into_iter());
+            Ok(iter)
+        })
+    }
+}
+
 impl CredentialProxy {
     /// Creates a new proxy backed by the given credential store.
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
+        let http_client = reqwest::Client::builder()
+            .dns_resolver(Arc::new(ProxySsrfSafeResolver))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("failed to build credential proxy HTTP client");
+
         Self {
             cred_store,
-            http_client: reqwest::Client::new(),
+            http_client,
         }
     }
 
