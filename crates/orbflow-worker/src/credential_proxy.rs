@@ -14,10 +14,51 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
+
 use orbflow_core::OrbflowError;
 use orbflow_core::credential_proxy::{CapabilityRequest, CapabilityResponse};
 use orbflow_core::ports::CredentialStore;
 use orbflow_core::ssrf::{BLOCKED_HOSTNAMES, is_private_ip};
+
+#[derive(Clone)]
+struct ProxySsrfSafeResolver;
+
+impl Resolve for ProxySsrfSafeResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let name_str = name.as_str().to_string();
+        let fut = async move {
+            let resolved = tokio::net::lookup_host((name_str.as_str(), 0)).await?;
+            let mut addrs = Vec::new();
+            for addr in resolved {
+                if let Some(reason) = is_private_ip(&addr.ip(), false) {
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!(
+                            "DNS resolution blocked: {} resolves to {} ({})",
+                            name_str,
+                            reason,
+                            addr.ip()
+                        ),
+                    ))
+                        as Box<dyn std::error::Error + Send + Sync>);
+                }
+                addrs.push(addr);
+            }
+            if addrs.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("No addresses found for {}", name_str),
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+
+            let addrs: Addrs = Box::new(addrs.into_iter());
+            Ok(addrs)
+        };
+        Box::pin(fut)
+    }
+}
 
 /// Executes capability requests by injecting credentials into HTTP calls.
 ///
@@ -33,9 +74,15 @@ pub struct CredentialProxy {
 impl CredentialProxy {
     /// Creates a new proxy backed by the given credential store.
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
+        let http_client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .dns_resolver(Arc::new(ProxySsrfSafeResolver))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
         Self {
             cred_store,
-            http_client: reqwest::Client::new(),
+            http_client,
         }
     }
 
