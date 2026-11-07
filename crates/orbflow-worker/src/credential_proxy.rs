@@ -19,6 +19,8 @@ use orbflow_core::credential_proxy::{CapabilityRequest, CapabilityResponse};
 use orbflow_core::ports::CredentialStore;
 use orbflow_core::ssrf::{BLOCKED_HOSTNAMES, is_private_ip};
 
+use crate::proxy_ssrf::ProxySsrfSafeResolver;
+
 /// Executes capability requests by injecting credentials into HTTP calls.
 ///
 /// The proxy ensures that plugins and MCP servers never see raw API keys.
@@ -35,7 +37,11 @@ impl CredentialProxy {
     pub fn new(cred_store: Arc<dyn CredentialStore>) -> Self {
         Self {
             cred_store,
-            http_client: reqwest::Client::new(),
+            http_client: reqwest::Client::builder()
+                .dns_resolver(std::sync::Arc::new(ProxySsrfSafeResolver))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("failed to build credential proxy http client"),
         }
     }
 
