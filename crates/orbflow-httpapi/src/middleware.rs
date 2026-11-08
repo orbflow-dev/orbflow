@@ -233,6 +233,7 @@ impl StartRateLimiter {
     const EVICTION_THRESHOLD: usize = 10_000;
 
     #[allow(clippy::result_large_err)]
+    #[allow(clippy::result_large_err)]
     pub fn check(&self, workflow_id: &str) -> Result<(), Response> {
         let now = Instant::now();
 
@@ -279,6 +280,7 @@ struct RateLimitBody {
 }
 
 /// Extracts and validates a workflow ID from the path, then checks rate limit.
+#[allow(clippy::result_large_err)]
 pub async fn check_start_rate_limit(
     limiter: &StartRateLimiter,
     workflow_id: &str,
