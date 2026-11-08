@@ -6,3 +6,7 @@
 **Vulnerability:** The `isSafeUrl` function checked for unsafe URL schemes (e.g., `javascript:`, `data:`) by trimming and lowercasing the input, but did not handle non-printable control characters. Attackers could bypass the check by injecting characters like `\x01` or tabs (`\x09`) into the URL scheme (e.g., `java\x09script:alert(1)`), which the browser would ignore and execute as XSS.
 **Learning:** Browsers are highly lenient when parsing URL schemes and will strip out invalid control characters before evaluation. Simple string prefix checks (`startsWith`) are insufficient for validating URLs because they don't account for these obfuscation techniques.
 **Prevention:** Before validating a URL scheme against a blocklist, always sanitize the input by explicitly stripping non-printable control characters (`[\x00-\x1F\x7F-\x9F]`) using a regex.
+## 2026-11-08 - [HIGH] Prevent TOCTOU SSRF in reqwest client
+**Vulnerability:** The credential proxy implemented SSRF defenses by resolving URLs and validating the IPs before executing the HTTP request. However, `reqwest` performs its own DNS lookup, meaning the IP validated might differ from the IP `reqwest` eventually connects to (DNS Rebinding/TOCTOU attack).
+**Learning:** Checking DNS entries before passing the URL to an HTTP client is insufficient for preventing SSRF.
+**Prevention:** Use a custom DNS resolver with `reqwest::ClientBuilder::dns_resolver()` that performs the internal IP check on the exact IPs yielded during the final connection attempt. Literal IPs still need to be handled separately.
