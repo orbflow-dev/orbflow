@@ -1,6 +1,8 @@
 // Copyright 2026 The Orbflow Authors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+#![allow(clippy::double_must_use)]
+
 //! Streaming types for node executors that produce incremental output.
 //!
 //! Some node types (notably LLM/AI nodes) can produce output incrementally
