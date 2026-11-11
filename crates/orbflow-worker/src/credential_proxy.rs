@@ -40,7 +40,7 @@ impl CredentialProxy {
                 .dns_resolver(std::sync::Arc::new(ProxySsrfSafeResolver))
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+                .expect("Failed to build secure HTTP client"),
         }
     }
 
